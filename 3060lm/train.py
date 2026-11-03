@@ -41,6 +41,11 @@ class Config:
     lr: float = 1e-4
     weight_decay: float = 0.01
     grad_clip: float = 1.0
+    beta2: float = 0.999
+    warmup_steps: int = 0
+    warmdown_frac: float = 0.0  # fraction of the time budget spent linearly decaying the LR to 0
+    # speed
+    compile: bool = False
     # eval
     eval_seq_len: int = 512  # fixed across experiments so BPB numbers stay comparable
     eval_batch_size: int = 32
@@ -122,6 +127,17 @@ def evaluate_bpb(model, cfg: Config) -> dict:
     return results
 
 
+def lr_schedule(step: int, progress: float, cfg: Config) -> float:
+    """LR multiplier: linear warmup over steps, then constant, then linear decay to 0 over the
+    last warmdown_frac of the wall-clock budget (time based, since runs have a fixed time budget)"""
+    warmup = min(1.0, (step + 1) / cfg.warmup_steps) if cfg.warmup_steps > 0 else 1.0
+    if cfg.warmdown_frac > 0:
+        warmdown = min(1.0, (1.0 - progress) / cfg.warmdown_frac)
+    else:
+        warmdown = 1.0
+    return warmup * max(warmdown, 0.0)
+
+
 def main():
     cfg = parse_args()
     torch.manual_seed(cfg.seed)
@@ -137,7 +153,9 @@ def main():
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay,
+                                  betas=(0.9, cfg.beta2), fused=True)
+    train_model = torch.compile(model) if cfg.compile else model
     data = MixedSource(cfg.data_dir, cfg.mix, cfg.seed)
 
     budget_s = cfg.time_budget_min * 60
@@ -147,8 +165,11 @@ def main():
     while train_time < budget_s:
         t0 = time.perf_counter()
         inputs, targets = data.get_batch(cfg.batch_size, cfg.seq_len)
+        lr_scale = lr_schedule(step, train_time / budget_s, cfg)
+        for group in optimizer.param_groups:
+            group["lr"] = cfg.lr * lr_scale
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model(inputs)
+            logits = train_model(inputs)
             loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
