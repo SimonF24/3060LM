@@ -9,3 +9,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 |---|--------|-------------:|------------:|---------:|-------:|-------:|------:|
 | 00 | Baseline: original model and recipe (AdamW 1e-4 constant, bs 16×512) | 1.3709 | 1.3860 | 1.3358 | 57.7M | 86M | 31.9k |
 | 01 | `torch.compile` | 1.3274 | 1.3464 | 1.2831 | 57.7M | 113M | 41.9k |
+| 02 | LR schedule: 1e-3 peak, 200-step warmup, linear decay over last 40%, β2 = 0.95 | 1.3241 | 1.3351 | 1.2985 | 57.7M | 114M | 42.3k |
+
+## Notes
+
+- **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without
+  downloads reached about 33.2k tok/s, so the clean compile speedup is closer to 26% than 31%.
+- **02:** a much smaller gain than expected, and FineMath got worse (1.2831 → 1.2985) while FineWeb-Edu improved.
+  The LR was picked from 10-minute runs, which may not hold at 45 minutes. Verdict pending a noise estimate.
