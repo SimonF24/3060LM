@@ -16,12 +16,6 @@ The dataset I'm using for this project is the <a href="https://huggingface.co/da
 └── evaluate.py       - Model evaluation
 ```
 
-### NOTE TO SELF (DELETE BEFORE PUSHING):
-
-If we want a question-answer version (maybe for chat finetuning?) one is available here: https://huggingface.co/datasets/armanc/ScienceQA.
-
-Here's more information on the ChatML format we've prepared: https://gist.github.com/edwardzjl/8df07c1f7140c9a3e2f48d33a8032090
-
 ## Full System Specs
 
 CPU: AMD Ryzen 5 3600  
