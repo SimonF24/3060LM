@@ -76,3 +76,19 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **08b/08c:** both tie 07a, the same-seed comparison, gaining 0.0037 and 0.0029. A wider MLP and GQA stay off for now.
   Both are worth another look when choosing model shape on longer runs.
 
+## Benchmarks
+
+Scored by total log-probability of each option with `3060lm/evaluate.py`, as accuracy ± standard error.
+
+| Benchmark | Chance | 00 baseline | 08a best recipe |
+|---|---:|---:|---:|
+| HellaSwag (n=10,042) | 25.0% | 25.95 ± 0.44% | 26.37 ± 0.44% |
+| PIQA (n=1,838) | 50.0% | 55.39 ± 1.16% | 56.96 ± 1.15% |
+| ARC-Easy (n=2,376) | 25.0% | 34.26 ± 0.97% | 41.16 ± 1.01% |
+| ARC-Challenge (n=1,172) | 25.0% | 16.81 ± 1.09% | 18.86 ± 1.14% |
+
+Only the ARC-Easy gain is clearly larger than its error. Summed log-probability favors short options, and on
+ARC-Challenge always picking the shortest option scores 22.7% and the longest 27.8%, which partly explains the
+below-chance score. The models score below even the shortest-option rule, so length isn't the full explanation.
+The bias applies to both models, so compare them with each other rather than reading these as absolute ability.
+

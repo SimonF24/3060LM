@@ -8,7 +8,7 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 ## Status
 
-Pretraining experiments are in progress. The final long run, benchmarks, chat fine-tuning and RL haven't been done yet.
+Pretraining experiments are in progress. The final long run, chat fine-tuning and RL haven't been done yet.
 
 Best accepted score so far: **1.2165 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
 
@@ -79,24 +79,23 @@ Any field of `Config` in `train.py` can be set with `--field=value`. Results are
 ├── prepare_data.py   - Train the tokenizer and tokenize the data
 ├── model.py          - Model architecture, with experiment flags
 ├── train.py          - Speedrun training harness and BPB evaluation
+├── evaluate.py       - HellaSwag, PIQA and ARC benchmarks for a checkpoint
 │
 │   Original arXiv/PubMed pipeline, not used by the current experiments:
 ├── eda.ipynb         - Exploratory data analysis
 ├── preprocessing.py  - Clean the raw papers
 ├── tokenizer.py      - Original tokenizer (model.py still imports its VOCAB_SIZE)
 ├── dataset.py        - Original data loader
-├── pretrain.py       - Original training loop
-└── evaluate.py       - Unimplemented stub
+└── pretrain.py       - Original training loop
 ```
 
 ## Roadmap
 
 1. **Choose model size and shape:** test the top recipes on longer runs.
-2. **Add benchmarks:** HellaSwag, ARC and PIQA alongside BPB.
-3. **Final pretraining run:** up to 24 hours, with checkpoint and resume added first.
-4. **Chat fine-tuning (SFT):** teach the chat format and tool use.
-5. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
-6. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
+2. **Final pretraining run:** up to 24 hours.
+3. **Chat fine-tuning (SFT):** teach the chat format and tool use.
+4. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
+5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
 
 ## System Specs
 
