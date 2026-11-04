@@ -12,6 +12,8 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 02 | LR schedule: 1e-3 peak, 200-step warmup, linear decay over last 40%, β2 = 0.95 | 1.3241 | 1.3351 | 1.2985 | 57.7M | 114M | 42.3k |
 | 02b | Same as 02, seed 1338 | 1.3180 | 1.3308 | 1.2880 | 57.7M | 115M | 42.6k |
 | 02c | Same as 02, peak LR 5e-4 | 1.3199 | 1.3318 | 1.2922 | 57.7M | 114M | 42.1k |
+| 03a | 02c with effective batch 32×512 (grad accumulation) | 1.2809 | 1.2984 | 1.2401 | 57.7M | 116M | 43.1k |
+| 03b | 02c with batch 8×512 | 1.4023 | 1.4087 | 1.3873 | 57.7M | 101M | 37.5k |
 
 ## Notes
 
@@ -22,3 +24,5 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **02:** the 1e-3 seeds average 1.3211, about 0.006 better than 01, which is inside the noise margin. The schedule
   is kept because it costs nothing, but its gain is unproven. FineMath looking worse in 02 is also within noise.
 - **02c:** 1e-3 and 5e-4 can't be told apart. 5e-4 is carried forward as the safer choice for longer runs.
+- **03:** batch size is the first change after compile to clear the noise margin. BPB by effective batch at the
+  same LR and token count: 8 → 1.4023, 16 → 1.3199, 32 → 1.2809.
