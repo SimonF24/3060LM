@@ -25,6 +25,8 @@ Best accepted score so far: **1.2165 bits per byte, down from a baseline of 1.37
 
 See [RESULTS.md](RESULTS.md) for every run, including the ones that didn't help, and `results.jsonl` for full configs and metrics.
 
+[RESEARCH.md](RESEARCH.md) has the experiment backlog, the plans for long runs and RL, and notes on related work.
+
 ## How Experiments Work
 
 Each experiment trains for a fixed **45 minutes** of wall-clock time, so speedups count toward the score, then reports its score on fixed held-out text.
