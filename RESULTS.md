@@ -35,6 +35,9 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 07c | QK-norm + factorized embedding and head, 256 dims | 1.2285 | 1.2554 | 1.1655 | 49.6M | 113M | 41.9k |
 | 07d | QK-norm + looped: 8 unique layers, 12 effective | 1.2305 | 1.2554 | 1.1723 | 44.0M | 105M | 38.7k |
 | 07e | QK-norm + looped: 12 unique layers, 20 effective | 1.2526 | 1.2767 | 1.1965 | 57.7M | 73M | 27.1k |
+| 08a | 07a (QK-norm + ReLU²), seed 1338 | 1.2136 | 1.2405 | 1.1506 | 48.2M | 118M | 43.8k |
+| 08b | 07a + MLP width 2048 | 1.2156 | 1.2413 | 1.1557 | 54.5M | 109M | 40.3k |
+| 08c | 07a + GQA, 4 KV heads | 1.2164 | 1.2418 | 1.1571 | 45.1M | 119M | 44.2k |
 
 ## Notes
 
@@ -68,4 +71,8 @@ Full configs and metrics for every run are in `results.jsonl`.
   (16% fewer parameters, 11% more tokens). The factorized head is 0.0068 worse without being cheaper than ReLU².
 - **Looped transformers:** equal compute (07d) is 0.0088 worse with no gain anywhere, and more depth (07e) is 0.0309
   worse because it sees about 28% fewer tokens. Both dropped for pretraining.
+- **ReLU² accepted:** paired by seed it gains 0.0039 and 0.0065, averaging 1.2165 vs 1.2217, and it's cheaper. Identical
+  recipes also varied in throughput (42.0k vs 43.8k tok/s), which likely contributes to the gap between seeds.
+- **08b/08c:** both tie 07a, the same-seed comparison, gaining 0.0037 and 0.0029. A wider MLP and GQA stay off for now.
+  Both are worth another look when choosing model shape on longer runs.
 

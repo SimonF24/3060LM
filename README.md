@@ -10,7 +10,7 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 Pretraining experiments are in progress. The final long run, benchmarks, chat fine-tuning and RL haven't been done yet.
 
-Best accepted score so far: **1.2217 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
+Best accepted score so far: **1.2165 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
 
 | Change | Weighted BPB |
 |---|---:|
@@ -21,6 +21,7 @@ Best accepted score so far: **1.2217 bits per byte, down from a baseline of 1.37
 | Effective batch 64×512, peak LR 1e-3 | 1.2604 |
 | Muon on hidden layers (average of 2 seeds) | 1.2305 |
 | QK-norm (average of 2 seeds) | 1.2217 |
+| ReLU² replaces SwiGLU (average of 2 seeds) | 1.2165 |
 
 See [RESULTS.md](RESULTS.md) for every run, including the ones that didn't help, and `results.jsonl` for full configs and metrics.
 
@@ -34,7 +35,7 @@ Each experiment trains for a fixed **45 minutes** of wall-clock time, so speedup
 
 ## Current Recipe
 
-- **Model:** 12 layers, 512 dimensions, 8 heads and 57.7M parameters, with RoPE, SwiGLU, RMSNorm, QK-norm and tied embeddings.
+- **Model:** 12 layers, 512 dimensions, 8 heads and 48.2M parameters, with RoPE, ReLU² MLPs, RMSNorm, QK-norm and tied embeddings.
 - **Optimizers:** Muon (LR 1e-3) on the hidden-layer weights, AdamW (LR 1e-3) on the embeddings and norm scales.
 - **Schedule:** 200-step warmup, then a linear decay to zero over the last 40% of the time budget.
 - **Batch:** effective 64×512, as 16×512 with 4 accumulation steps.
@@ -65,7 +66,7 @@ python download_data.py  # speedrun shards, about 3 GB (--all fetches about 10 G
 python prepare_data.py   # trains the tokenizer, tokenizes every shard on disk
 
 python train.py --name=my-run --compile=true --warmup_steps=200 --warmdown_frac=0.4 --beta2=0.95 \
-    --batch_size=16 --grad_accum=4 --lr=1e-3 --muon_lr=1e-3 --qk_norm=true
+    --batch_size=16 --grad_accum=4 --lr=1e-3 --muon_lr=1e-3 --qk_norm=true --activation=relu2
 ```
 
 Any field of `Config` in `train.py` can be set with `--field=value`. Results are appended to `results.jsonl`, and logs and the final model go to `training_runs/<name>/`.
@@ -90,13 +91,12 @@ Any field of `Config` in `train.py` can be set with `--field=value`. Results are
 
 ## Roadmap
 
-1. **Finish architecture experiments:** confirm ReLU² and test spending its saved compute on a wider MLP.
-2. **Choose model size and shape:** test the top recipes on longer runs.
-3. **Add benchmarks:** HellaSwag, ARC and PIQA alongside BPB.
-4. **Final pretraining run:** up to 24 hours, with checkpoint and resume added first.
-5. **Chat fine-tuning (SFT):** teach the chat format and tool use.
-6. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
-7. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
+1. **Choose model size and shape:** test the top recipes on longer runs.
+2. **Add benchmarks:** HellaSwag, ARC and PIQA alongside BPB.
+3. **Final pretraining run:** up to 24 hours, with checkpoint and resume added first.
+4. **Chat fine-tuning (SFT):** teach the chat format and tool use.
+5. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
+6. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
 
 ## System Specs
 
