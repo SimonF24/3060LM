@@ -14,6 +14,8 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 02c | Same as 02, peak LR 5e-4 | 1.3199 | 1.3318 | 1.2922 | 57.7M | 114M | 42.1k |
 | 03a | 02c with effective batch 32×512 (grad accumulation) | 1.2809 | 1.2984 | 1.2401 | 57.7M | 116M | 43.1k |
 | 03b | 02c with batch 8×512 | 1.4023 | 1.4087 | 1.3873 | 57.7M | 101M | 37.5k |
+| 03c | 02c with effective batch 64×512 | 1.2812 | 1.3013 | 1.2344 | 57.7M | 110M | 40.6k |
+| 03d | 02c with effective batch 128×512 | 1.3096 | 1.3287 | 1.2652 | 57.7M | 110M | 40.6k |
 
 ## Notes
 
@@ -26,3 +28,6 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **02c:** 1e-3 and 5e-4 can't be told apart. 5e-4 is carried forward as the safer choice for longer runs.
 - **03:** batch size is the first change after compile to clear the noise margin. BPB by effective batch at the
   same LR and token count: 8 → 1.4023, 16 → 1.3199, 32 → 1.2809.
+  Continuing at LR 5e-4: 64 → 1.2812 (tied with 32), 128 → 1.3096. With only about 1.7k steps, 128 likely has too
+  few updates at this LR, and its 200-step warmup takes 12% of them. LR needs rechecking at larger batches.
+  03c/03d ran about 6% slower than 03a (40.6k vs 43.1k tok/s) for no known reason, which may cost them a little.
