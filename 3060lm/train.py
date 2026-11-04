@@ -43,6 +43,8 @@ class Config:
     grad_accum: int = 1  # micro-batches per optimizer step, the effective batch is batch_size * grad_accum
     grad_clip: float = 1.0
     beta2: float = 0.999
+    muon_lr: float = 0.0  # if > 0, 2D hidden layer weights use Muon at this LR, everything else stays on AdamW
+    muon_momentum: float = 0.95
     warmup_steps: int = 0
     warmdown_frac: float = 0.0  # fraction of the time budget spent linearly decaying the LR to 0
     # speed
@@ -128,6 +130,24 @@ def evaluate_bpb(model, cfg: Config) -> dict:
     return results
 
 
+def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, float]]:
+    """Returns (optimizer, base LR) pairs. Embeddings and the 1D RMSNorm scales always use AdamW."""
+    adamw_params, muon_params = [], []
+    for name, p in model.named_parameters():
+        use_muon = cfg.muon_lr > 0 and p.ndim == 2 and "token_embedding" not in name
+        (muon_params if use_muon else adamw_params).append(p)
+    optimizers = [(torch.optim.AdamW(adamw_params, lr=cfg.lr, weight_decay=cfg.weight_decay,
+                                     betas=(0.9, cfg.beta2), fused=True), cfg.lr)]
+    if muon_params:
+        # match_rms_adamw scales the update to 0.2 * lr per entry, so LRs are on a similar scale to AdamW
+        optimizers.append((torch.optim.Muon(muon_params, lr=cfg.muon_lr, weight_decay=0.0,
+                                            momentum=cfg.muon_momentum, adjust_lr_fn="match_rms_adamw"),
+                           cfg.muon_lr))
+    print(f"AdamW: {sum(p.numel() for p in adamw_params) / 1e6:.1f}M params, "
+          f"Muon: {sum(p.numel() for p in muon_params) / 1e6:.1f}M params")
+    return optimizers
+
+
 def lr_schedule(step: int, progress: float, cfg: Config) -> float:
     """LR multiplier: linear warmup over steps, then constant, then linear decay to 0 over the
     last warmdown_frac of the wall-clock budget (time based, since runs have a fixed time budget)"""
@@ -154,8 +174,7 @@ def main():
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay,
-                                  betas=(0.9, cfg.beta2), fused=True)
+    optimizers = build_optimizers(model, cfg)
     train_model = torch.compile(model) if cfg.compile else model
     data = MixedSource(cfg.data_dir, cfg.mix, cfg.seed)
 
@@ -166,8 +185,9 @@ def main():
     while train_time < budget_s:
         t0 = time.perf_counter()
         lr_scale = lr_schedule(step, train_time / budget_s, cfg)
-        for group in optimizer.param_groups:
-            group["lr"] = cfg.lr * lr_scale
+        for optimizer, base_lr in optimizers:
+            for group in optimizer.param_groups:
+                group["lr"] = base_lr * lr_scale
         for _ in range(cfg.grad_accum):
             inputs, targets = data.get_batch(cfg.batch_size, cfg.seq_len)
             with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -176,8 +196,9 @@ def main():
             (loss / cfg.grad_accum).backward()
             tokens += inputs.numel()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+        for optimizer, _ in optimizers:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
         step += 1
         if step % cfg.log_every == 0:
             loss_val = loss.item()  # syncs, so timing below is accurate
