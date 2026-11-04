@@ -30,6 +30,7 @@ class TransformerConfig:
     activation: str = "swiglu" # "swiglu", or "relu2", which drops the gate matrix and squares a ReLU
     mlp_dim: int = 0 # hidden dimension of the MLP, 0 means the default rounding of 8/3 * model_dim
     embed_dim: int = 0 # if > 0 and < model_dim, factorize the embedding and output head through this dimension
+    logit_softcap: float = 0.0 # if > 0, smoothly limit logits to +/- this value with a tanh
     # Weight sharing: layers[loop_start:loop_end] run num_loops times in a row
     loop_start: int = 0
     loop_end: int = 0
@@ -217,6 +218,8 @@ class Transformer(nn.Module):
         if self.factorized:
             x = self.embed_out(x)
         x = self.vocab_projection(x)
+        if c.logit_softcap > 0:
+            x = c.logit_softcap * torch.tanh(x / c.logit_softcap)
         return x
     
 if __name__ == "__main__":

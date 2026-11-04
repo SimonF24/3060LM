@@ -45,6 +45,8 @@ class Config:
     loop_start: int = 0
     loop_end: int = 0
     num_loops: int = 1
+    logit_softcap: float = 0.0
+    align_starts: bool = False  # start every training window at a document boundary
     # optimization
     batch_size: int = 16
     seq_len: int = 512
@@ -56,7 +58,10 @@ class Config:
     muon_lr: float = 0.0  # if > 0, 2D hidden layer weights use Muon at this LR, everything else stays on AdamW
     muon_momentum: float = 0.95
     warmup_steps: int = 0
-    warmdown_frac: float = 0.0  # fraction of the time budget spent linearly decaying the LR to 0
+    warmdown_frac: float = 0.0  # fraction of the time budget spent linearly decaying the LR to min_lr_frac
+    min_lr_frac: float = 0.0  # final LR as a fraction of the peak LR
+    ema_start_frac: float = 0.0  # if > 0, average the weights after this fraction of the budget and evaluate those
+    ema_decay: float = 0.999
     # speed
     compile: bool = False
     # eval
@@ -85,19 +90,25 @@ def parse_args() -> Config:
 class MixedSource:
     """Samples random windows from several memmapped token files with fixed mixture weights."""
 
-    def __init__(self, data_dir: str, mix: dict, seed: int):
+    def __init__(self, data_dir: str, mix: dict, seed: int, align_starts: bool = False):
         self.names = list(mix)
         self.weights = np.array([mix[n] for n in self.names], dtype=np.float64)
         self.weights /= self.weights.sum()
         self.data = {n: np.memmap(Path(data_dir) / n / "train.bin", dtype=np.uint16, mode="r") for n in self.names}
         self.rng = np.random.default_rng(seed)
+        # Every document starts with <|endoftext|>, which has token id 0
+        self.doc_starts = {n: np.flatnonzero(a == 0) for n, a in self.data.items()} if align_starts else None
 
     def get_batch(self, batch_size: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         sources = self.rng.choice(len(self.names), size=batch_size, p=self.weights)
         rows = []
         for s in sources:
             arr = self.data[self.names[s]]
-            i = self.rng.integers(0, len(arr) - seq_len - 1)
+            if self.doc_starts is None:
+                i = self.rng.integers(0, len(arr) - seq_len - 1)
+            else:
+                starts = self.doc_starts[self.names[s]]
+                i = min(starts[self.rng.integers(0, len(starts))], len(arr) - seq_len - 1)
             rows.append(arr[i:i + seq_len + 1])
         batch = torch.from_numpy(np.stack(rows).astype(np.int64)).pin_memory()
         batch = batch.to("cuda", non_blocking=True)
@@ -163,11 +174,12 @@ def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, fl
 
 
 def lr_schedule(step: int, progress: float, cfg: Config) -> float:
-    """LR multiplier: linear warmup over steps, then constant, then linear decay to 0 over the
+    """LR multiplier: linear warmup over steps, then constant, then linear decay to min_lr_frac over the
     last warmdown_frac of the wall-clock budget (time based, since runs have a fixed time budget)"""
     warmup = min(1.0, (step + 1) / cfg.warmup_steps) if cfg.warmup_steps > 0 else 1.0
     if cfg.warmdown_frac > 0:
         warmdown = min(1.0, (1.0 - progress) / cfg.warmdown_frac)
+        warmdown = cfg.min_lr_frac + (1.0 - cfg.min_lr_frac) * max(warmdown, 0.0)
     else:
         warmdown = 1.0
     return warmup * max(warmdown, 0.0)
@@ -188,13 +200,15 @@ def main():
                                   qk_norm=cfg.qk_norm, zero_init_residual=cfg.zero_init_residual,
                                   tie_embeddings=cfg.tie_embeddings, activation=cfg.activation,
                                   mlp_dim=cfg.mlp_dim, embed_dim=cfg.embed_dim, loop_start=cfg.loop_start,
-                                  loop_end=cfg.loop_end, num_loops=cfg.num_loops)
+                                  loop_end=cfg.loop_end, num_loops=cfg.num_loops,
+                                  logit_softcap=cfg.logit_softcap)
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")
     optimizers = build_optimizers(model, cfg)
     train_model = torch.compile(model) if cfg.compile else model
-    data = MixedSource(cfg.data_dir, cfg.mix, cfg.seed)
+    data = MixedSource(cfg.data_dir, cfg.mix, cfg.seed, cfg.align_starts)
+    ema = None
 
     budget_s = cfg.time_budget_min * 60
     step, tokens, train_time = 0, 0, 0.0
@@ -207,6 +221,7 @@ def main():
             optimizer.load_state_dict(state)
         step, tokens, train_time = ckpt["step"], ckpt["tokens"], ckpt["train_time"]
         loss_ema = ckpt["loss_ema"]
+        ema = ckpt["ema"]
         data.rng.bit_generator.state = ckpt["data_rng"]
         torch.set_rng_state(ckpt["torch_rng"].cpu())
         print(f"Resumed from step {step}, {train_time / 60:.1f} min", flush=True)
@@ -230,6 +245,13 @@ def main():
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         step += 1
+        if cfg.ema_start_frac > 0 and train_time / budget_s >= cfg.ema_start_frac:
+            with torch.no_grad():
+                if ema is None:
+                    ema = {k: p.detach().clone() for k, p in model.named_parameters()}
+                else:
+                    for k, p in model.named_parameters():
+                        ema[k].lerp_(p, 1 - cfg.ema_decay)
         if step % cfg.log_every == 0:
             loss_val = loss.item()  # syncs, so timing below is accurate
             loss_ema = loss_val if loss_ema is None else 0.9 * loss_ema + 0.1 * loss_val
@@ -252,11 +274,15 @@ def main():
             last_ckpt = train_time
             # Written to a temporary file first, so a crash mid-save can't destroy the previous checkpoint
             torch.save({"model": model.state_dict(), "optimizers": [o.state_dict() for o, _ in optimizers],
-                        "step": step, "tokens": tokens, "train_time": train_time, "loss_ema": loss_ema,
+                        "step": step, "tokens": tokens, "train_time": train_time, "loss_ema": loss_ema, "ema": ema,
                         "data_rng": data.rng.bit_generator.state, "torch_rng": torch.get_rng_state()},
                        ckpt_path.with_suffix(".tmp"))
             ckpt_path.with_suffix(".tmp").replace(ckpt_path)
 
+    if ema is not None:
+        with torch.no_grad():
+            for k, p in model.named_parameters():
+                p.copy_(ema[k])
     t0 = time.perf_counter()
     bpb = evaluate_bpb(model, cfg)
     eval_time = time.perf_counter() - t0
