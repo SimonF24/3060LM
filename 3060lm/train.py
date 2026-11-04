@@ -40,6 +40,7 @@ class Config:
     seq_len: int = 512
     lr: float = 1e-4
     weight_decay: float = 0.01
+    grad_accum: int = 1  # micro-batches per optimizer step, the effective batch is batch_size * grad_accum
     grad_clip: float = 1.0
     beta2: float = 0.999
     warmup_steps: int = 0
@@ -164,19 +165,20 @@ def main():
     torch.cuda.synchronize()
     while train_time < budget_s:
         t0 = time.perf_counter()
-        inputs, targets = data.get_batch(cfg.batch_size, cfg.seq_len)
         lr_scale = lr_schedule(step, train_time / budget_s, cfg)
         for group in optimizer.param_groups:
             group["lr"] = cfg.lr * lr_scale
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = train_model(inputs)
-            loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
-        loss.backward()
+        for _ in range(cfg.grad_accum):
+            inputs, targets = data.get_batch(cfg.batch_size, cfg.seq_len)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                logits = train_model(inputs)
+                loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
+            (loss / cfg.grad_accum).backward()
+            tokens += inputs.numel()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         step += 1
-        tokens += inputs.numel()
         if step % cfg.log_every == 0:
             loss_val = loss.item()  # syncs, so timing below is accurate
             loss_ema = loss_val if loss_ema is None else 0.9 * loss_ema + 0.1 * loss_val
