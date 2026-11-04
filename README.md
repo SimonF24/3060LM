@@ -90,7 +90,7 @@ Any field of `Config` in `train.py` can be set with `--field=value`. Results are
 
 ## Roadmap
 
-1. **Finish architecture experiments:** ReLU², MLP width, a factorized output head, and a looped transformer ablation.
+1. **Finish architecture experiments:** confirm ReLU² and test spending its saved compute on a wider MLP.
 2. **Choose model size and shape:** test the top recipes on longer runs.
 3. **Add benchmarks:** HellaSwag, ARC and PIQA alongside BPB.
 4. **Final pretraining run:** up to 24 hours, with checkpoint and resume added first.

@@ -30,6 +30,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 05d | 05a (QK-norm), seed 1338 | 1.2201 | 1.2466 | 1.1583 | 57.7M | 102M | 37.7k |
 | 06a | 04c + GQA, 2 KV heads | 1.2316 | 1.2550 | 1.1772 | 53.0M | 108M | 40.1k |
 | 06b | 04c + GQA, 4 KV heads | 1.2282 | 1.2519 | 1.1728 | 54.5M | 107M | 39.7k |
+| 07a | QK-norm + ReLU² | 1.2193 | 1.2448 | 1.1599 | 48.2M | 113M | 42.0k |
+| 07b | QK-norm + MLP width 1365 | 1.2215 | 1.2472 | 1.1616 | 54.5M | 103M | 38.2k |
+| 07c | QK-norm + factorized embedding and head, 256 dims | 1.2285 | 1.2554 | 1.1655 | 49.6M | 113M | 41.9k |
+| 07d | QK-norm + looped: 8 unique layers, 12 effective | 1.2305 | 1.2554 | 1.1723 | 44.0M | 105M | 38.7k |
+| 07e | QK-norm + looped: 12 unique layers, 20 effective | 1.2526 | 1.2767 | 1.1965 | 57.7M | 73M | 27.1k |
 
 ## Notes
 
@@ -59,3 +64,8 @@ Full configs and metrics for every run are in `results.jsonl`.
   AdamW pair, so noise varies by recipe. QK-norm becomes part of the base recipe, with a gain of about 0.009.
 - **06:** GQA is a tie on score against the base recipe's 1.2305, despite 4-6% more tokens and 5-8% fewer parameters.
   It stays off for now and may be worth revisiting for sizing or faster generation. GQA with QK-norm is untested.
+- **07:** compared against QK-norm's 1.2217. ReLU² and MLP width 1365 tie on score but are cheaper, ReLU² by a lot
+  (16% fewer parameters, 11% more tokens). The factorized head is 0.0068 worse without being cheaper than ReLU².
+- **Looped transformers:** equal compute (07d) is 0.0088 worse with no gain anywhere, and more depth (07e) is 0.0309
+  worse because it sees about 28% fewer tokens. Both dropped for pretraining.
+
