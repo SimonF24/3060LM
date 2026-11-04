@@ -20,6 +20,8 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 03f | 03c with peak LR 2e-3 | 1.2622 | 1.2832 | 1.2134 | 57.7M | 109M | 40.4k |
 | 04a | 03e + Muon on hidden layers, LR 2e-3 | **1.2358** | 1.2592 | 1.1811 | 57.7M | 102M | 37.6k |
 | 04b | 03e + Muon on hidden layers, LR 6e-3 | 1.3776 | 1.3898 | 1.3491 | 57.7M | 101M | 37.4k |
+| 04c | 03e + Muon on hidden layers, LR 1e-3 | **1.2308** | 1.2545 | 1.1754 | 57.7M | 102M | 37.6k |
+| 04d | 03e + Muon on hidden layers, LR 3e-3 | 1.2491 | 1.2715 | 1.1968 | 57.7M | 102M | 37.9k |
 
 ## Notes
 
@@ -39,4 +41,4 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **03e/03f:** at batch 64, raising the peak LR from 5e-4 to 1e-3 gains 0.0208 (0.0205 over 03a, the previous best).
   1e-3 and 2e-3 tie. Batch 64 at 1e-3 is the new base recipe.
 - **04:** Muon gains 0.0246 over AdamW despite about 8% lower throughput (37.6k vs 40.6k tok/s). LR 6e-3 is far too
-  high. LRs are in `match_rms_adamw` units, and AdamW stays on the embeddings and norm scales at 1e-3.
+  high. LRs are in `match_rms_adamw` units, and AdamW stays on the embeddings and norm scales at 1e-3.  By Muon LR: 1e-3 → 1.2308, 2e-3 → 1.2358 (within noise), 3e-3 → 1.2491, 6e-3 → 1.3776. 5e-4 is untested.

@@ -23,6 +23,9 @@ class TransformerConfig:
     head_dim: int = field(init=False) # dimension of each attention head
     # computed as model_dim // num_heads in __post_init__
     max_seq_len: int = 2048 # maximum sequence length for the model, used for positional embeddings
+    qk_norm: bool = False # RMSNorm each head's queries and keys, which bounds the attention logits
+    zero_init_residual: bool = False # zero-init the residual-writing projections so each block starts as the identity
+    tie_embeddings: bool = True # share weights between the token embedding and the output vocab projection
     
     def __post_init__(self):
         if self.model_dim % self.num_heads != 0:
@@ -60,6 +63,9 @@ class TransformerBlock(nn.Module):
         
         self.attention_prenorm = nn.RMSNorm(config.model_dim)
         self.mlp_prenorm = nn.RMSNorm(config.model_dim)
+        if config.qk_norm:
+            self.q_norm = nn.RMSNorm(config.head_dim)
+            self.k_norm = nn.RMSNorm(config.head_dim)
         
     def apply_rope(self, x: torch.Tensor, rope_cos: torch.Tensor, rope_sin: torch.Tensor) -> torch.Tensor:
         # x shape: (batch_size, num_heads, seq_len, head_dim)
@@ -87,6 +93,9 @@ class TransformerBlock(nn.Module):
         q = q.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
         k = k.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
+        if self.config.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
         # Apply RoPE positional embeddings to the query and key projections
         q = self.apply_rope(q, rope_cos, rope_sin)
         k = self.apply_rope(k, rope_cos, rope_sin)
@@ -137,7 +146,8 @@ class Transformer(nn.Module):
         
         self.vocab_prenorm = nn.RMSNorm(config.model_dim)
         self.vocab_projection = nn.Linear(config.model_dim, config.vocab_size, bias=False)
-        self.vocab_projection.weight = self.token_embedding.weight # weight tying
+        if config.tie_embeddings:
+            self.vocab_projection.weight = self.token_embedding.weight # weight tying
         # This makes the token embedding and output vocab projection share the same weights,
         # making them work in the same embedding space, which saves parameters
         
@@ -155,7 +165,10 @@ class Transformer(nn.Module):
         residual_std = 0.02 / math.sqrt(2 * config.num_layers)
         for name, p in self.named_parameters():
             if name.endswith("out_proj.weight") or name.endswith("mlp_contract.weight"):
-                nn.init.normal_(p, mean=0.0, std=residual_std)
+                if config.zero_init_residual:
+                    nn.init.zeros_(p)
+                else:
+                    nn.init.normal_(p, mean=0.0, std=residual_std)
 
     def forward(self, input_tokens: torch.Tensor) -> torch.Tensor:
         assert input_tokens.size(1) <= self.config.max_seq_len, (

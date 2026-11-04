@@ -35,6 +35,9 @@ class Config:
     model_dim: int = 512
     num_layers: int = 12
     num_heads: int = 8
+    qk_norm: bool = False
+    zero_init_residual: bool = False
+    tie_embeddings: bool = True
     # optimization
     batch_size: int = 16
     seq_len: int = 512
@@ -131,10 +134,11 @@ def evaluate_bpb(model, cfg: Config) -> dict:
 
 
 def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, float]]:
-    """Returns (optimizer, base LR) pairs. Embeddings and the 1D RMSNorm scales always use AdamW."""
+    """Returns (optimizer, base LR) pairs. Embeddings, the output projection and the 1D RMSNorm scales always use AdamW."""
     adamw_params, muon_params = [], []
     for name, p in model.named_parameters():
-        use_muon = cfg.muon_lr > 0 and p.ndim == 2 and "token_embedding" not in name
+        use_muon = (cfg.muon_lr > 0 and p.ndim == 2
+                    and "token_embedding" not in name and "vocab_projection" not in name)
         (muon_params if use_muon else adamw_params).append(p)
     optimizers = [(torch.optim.AdamW(adamw_params, lr=cfg.lr, weight_decay=cfg.weight_decay,
                                      betas=(0.9, cfg.beta2), fused=True), cfg.lr)]
@@ -170,7 +174,9 @@ def main():
 
     model_cfg = TransformerConfig(vocab_size=cfg.vocab_size, model_dim=cfg.model_dim,
                                   num_layers=cfg.num_layers, num_heads=cfg.num_heads,
-                                  max_seq_len=max(cfg.seq_len, cfg.eval_seq_len))
+                                  max_seq_len=max(cfg.seq_len, cfg.eval_seq_len),
+                                  qk_norm=cfg.qk_norm, zero_init_residual=cfg.zero_init_residual,
+                                  tie_embeddings=cfg.tie_embeddings)
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")
