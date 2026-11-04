@@ -16,6 +16,8 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 03b | 02c with batch 8×512 | 1.4023 | 1.4087 | 1.3873 | 57.7M | 101M | 37.5k |
 | 03c | 02c with effective batch 64×512 | 1.2812 | 1.3013 | 1.2344 | 57.7M | 110M | 40.6k |
 | 03d | 02c with effective batch 128×512 | 1.3096 | 1.3287 | 1.2652 | 57.7M | 110M | 40.6k |
+| 03e | 03c with peak LR 1e-3 | **1.2604** | 1.2816 | 1.2109 | 57.7M | 110M | 40.6k |
+| 03f | 03c with peak LR 2e-3 | 1.2622 | 1.2832 | 1.2134 | 57.7M | 109M | 40.4k |
 
 ## Notes
 
@@ -30,4 +32,7 @@ Full configs and metrics for every run are in `results.jsonl`.
   same LR and token count: 8 → 1.4023, 16 → 1.3199, 32 → 1.2809.
   Continuing at LR 5e-4: 64 → 1.2812 (tied with 32), 128 → 1.3096. With only about 1.7k steps, 128 likely has too
   few updates at this LR, and its 200-step warmup takes 12% of them. LR needs rechecking at larger batches.
-  03c/03d ran about 6% slower than 03a (40.6k vs 43.1k tok/s) for no known reason, which may cost them a little.
+  All four batch-64+ runs (03c-f) ran about 6% slower than 03a (40.5k vs 43.1k tok/s). Since it repeats, it looks
+  systematic rather than random, but the cause is unknown and accumulation shouldn't cost this much.
+- **03e/03f:** at batch 64, raising the peak LR from 5e-4 to 1e-3 gains 0.0208 (0.0205 over 03a, the previous best).
+  1e-3 and 2e-3 tie. Batch 64 at 1e-3 is the new base recipe.
