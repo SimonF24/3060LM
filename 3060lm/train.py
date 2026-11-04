@@ -64,6 +64,9 @@ class Config:
     eval_batch_size: int = 32
     eval_max_tokens: int = 2_000_000  # per source
     log_every: int = 50
+    eval_every_min: float = 0.0  # if > 0, also report val BPB during training
+    ckpt_every_min: float = 0.0  # if > 0, save a resumable checkpoint to training_runs/<name>/latest.pt
+    resume: bool = False  # continue from training_runs/<name>/latest.pt
     seed: int = 1337
 
 
@@ -196,6 +199,18 @@ def main():
     budget_s = cfg.time_budget_min * 60
     step, tokens, train_time = 0, 0, 0.0
     loss_ema = None
+    ckpt_path = run_dir / "latest.pt"
+    if cfg.resume:
+        ckpt = torch.load(ckpt_path, map_location="cuda")
+        model.load_state_dict(ckpt["model"])
+        for (optimizer, _), state in zip(optimizers, ckpt["optimizers"]):
+            optimizer.load_state_dict(state)
+        step, tokens, train_time = ckpt["step"], ckpt["tokens"], ckpt["train_time"]
+        loss_ema = ckpt["loss_ema"]
+        data.rng.bit_generator.state = ckpt["data_rng"]
+        torch.set_rng_state(ckpt["torch_rng"].cpu())
+        print(f"Resumed from step {step}, {train_time / 60:.1f} min", flush=True)
+    last_ckpt, last_eval = train_time, train_time
     torch.cuda.synchronize()
     while train_time < budget_s:
         t0 = time.perf_counter()
@@ -226,6 +241,21 @@ def main():
         if loss_val is not None and step % (cfg.log_every * 10) == 0:
             print(f"step {step} | {train_time / 60:.1f}/{cfg.time_budget_min:.0f} min | "
                   f"loss {loss_ema:.4f} | {tokens / train_time:,.0f} tok/s", flush=True)
+        if cfg.eval_every_min > 0 and train_time - last_eval >= cfg.eval_every_min * 60:
+            last_eval = train_time
+            bpb = evaluate_bpb(model, cfg)
+            for k, v in bpb.items():
+                writer.add_scalar(f"val_bpb/{k}", v, tokens)
+            print(f"step {step} | {train_time / 60:.1f} min | {tokens / 1e6:.0f}M tokens | "
+                  f"val BPB {bpb['weighted']:.4f}", flush=True)
+        if cfg.ckpt_every_min > 0 and train_time - last_ckpt >= cfg.ckpt_every_min * 60:
+            last_ckpt = train_time
+            # Written to a temporary file first, so a crash mid-save can't destroy the previous checkpoint
+            torch.save({"model": model.state_dict(), "optimizers": [o.state_dict() for o, _ in optimizers],
+                        "step": step, "tokens": tokens, "train_time": train_time, "loss_ema": loss_ema,
+                        "data_rng": data.rng.bit_generator.state, "torch_rng": torch.get_rng_state()},
+                       ckpt_path.with_suffix(".tmp"))
+            ckpt_path.with_suffix(".tmp").replace(ckpt_path)
 
     t0 = time.perf_counter()
     bpb = evaluate_bpb(model, cfg)

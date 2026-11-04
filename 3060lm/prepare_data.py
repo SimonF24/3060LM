@@ -11,6 +11,7 @@ Builds the pretraining data for the general STEM-leaning mix.
 import json
 from multiprocessing import Pool
 from pathlib import Path
+import sys
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -19,7 +20,8 @@ from tqdm import tqdm
 
 ROOT = Path(__file__).parent.parent
 RAW = ROOT / "data/raw"
-OUT = ROOT / "data/tokenized"
+# Pass --out=<path under the repo root> to keep a larger tokenized set apart from the speedrun data
+OUT = ROOT / next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--out=")), "data/tokenized")
 TOKENIZER_PATH = ROOT / "tokenizer/stem32k.json"
 
 SOURCES = {
