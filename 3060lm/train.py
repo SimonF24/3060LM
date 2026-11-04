@@ -35,6 +35,7 @@ class Config:
     model_dim: int = 512
     num_layers: int = 12
     num_heads: int = 8
+    num_kv_heads: int = 0  # 0 means standard multi-head attention
     qk_norm: bool = False
     zero_init_residual: bool = False
     tie_embeddings: bool = True
@@ -173,7 +174,7 @@ def main():
     writer = SummaryWriter(log_dir=str(run_dir))
 
     model_cfg = TransformerConfig(vocab_size=cfg.vocab_size, model_dim=cfg.model_dim,
-                                  num_layers=cfg.num_layers, num_heads=cfg.num_heads,
+                                  num_layers=cfg.num_layers, num_heads=cfg.num_heads, num_kv_heads=cfg.num_kv_heads,
                                   max_seq_len=max(cfg.seq_len, cfg.eval_seq_len),
                                   qk_norm=cfg.qk_norm, zero_init_residual=cfg.zero_init_residual,
                                   tie_embeddings=cfg.tie_embeddings)

@@ -16,6 +16,7 @@ class TransformerConfig:
     model_dim: int = 512 # dimension of the token embeddings and the model's hidden states
     num_layers: int = 12 # number of transformer layers/blocks
     num_heads: int = 8 # number of attention heads in each multi-head attention mechanism
+    num_kv_heads: int = 0 # number of key/value heads for grouped-query attention, 0 means num_heads (standard MHA)
     # num_heads must divide model_dim evenly, so that each head has an integer dimension
     # (head_dim = model_dim // num_heads)
     dropout: float = 0.0 # dropout rate for regularization, following LLaMA, we set this to 0.0
@@ -31,6 +32,10 @@ class TransformerConfig:
         if self.model_dim % self.num_heads != 0:
             raise ValueError(f"model_dim ({self.model_dim}) must be divisible by num_heads ({self.num_heads})")
         self.head_dim = self.model_dim // self.num_heads
+        if self.num_kv_heads == 0:
+            self.num_kv_heads = self.num_heads
+        if self.num_heads % self.num_kv_heads != 0:
+            raise ValueError(f"num_kv_heads ({self.num_kv_heads}) must divide num_heads ({self.num_heads})")
     
 
 class TransformerBlock(nn.Module):
@@ -41,8 +46,9 @@ class TransformerBlock(nn.Module):
         # Projection matrices for query, key, and value
         # These will be reshaped to (num_heads, head_dim) for multi-head attention
         self.q_proj = nn.Linear(config.model_dim, config.model_dim, bias=False)
-        self.k_proj = nn.Linear(config.model_dim, config.model_dim, bias=False)
-        self.v_proj = nn.Linear(config.model_dim, config.model_dim, bias=False)
+        kv_dim = config.num_kv_heads * config.head_dim
+        self.k_proj = nn.Linear(config.model_dim, kv_dim, bias=False)
+        self.v_proj = nn.Linear(config.model_dim, kv_dim, bias=False)
         
         # Attention output projection
         # This allows for mixing information across the heads of the multi-head attention mechanism
@@ -91,14 +97,19 @@ class TransformerBlock(nn.Module):
         # Reshape to (batch_size, seq_len, num_heads, head_dim)
         # then (batch_size, num_heads, seq_len, head_dim) for multi-head attention
         q = q.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.config.num_kv_heads, self.config.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.config.num_kv_heads, self.config.head_dim).transpose(1, 2)
         if self.config.qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
         # Apply RoPE positional embeddings to the query and key projections
         q = self.apply_rope(q, rope_cos, rope_sin)
         k = self.apply_rope(k, rope_cos, rope_sin)
+        # Grouped-query attention: each group of query heads shares one key/value head
+        kv_repeats = self.config.num_heads // self.config.num_kv_heads
+        if kv_repeats > 1:
+            k = k.repeat_interleave(kv_repeats, dim=1)
+            v = v.repeat_interleave(kv_repeats, dim=1)
         # Perform causal multi-head attention
         attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.config.dropout, is_causal=True)
         # Reshape to (batch_size, seq_len, num_heads, head_dim) then (batch_size, seq_len, model_dim)

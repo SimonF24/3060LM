@@ -22,6 +22,10 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 04b | 03e + Muon on hidden layers, LR 6e-3 | 1.3776 | 1.3898 | 1.3491 | 57.7M | 101M | 37.4k |
 | 04c | 03e + Muon on hidden layers, LR 1e-3 | **1.2308** | 1.2545 | 1.1754 | 57.7M | 102M | 37.6k |
 | 04d | 03e + Muon on hidden layers, LR 3e-3 | 1.2491 | 1.2715 | 1.1968 | 57.7M | 102M | 37.9k |
+| 04e | 03e + Muon on hidden layers, LR 5e-4 | 1.2393 | 1.2628 | 1.1847 | 57.7M | 104M | 38.6k |
+| 05a | 04c + QK-norm | 1.2232 | 1.2489 | 1.1632 | 57.7M | 100M | 37.2k |
+| 05b | 04c + zero-init output projections | 1.2294 | 1.2535 | 1.1731 | 57.7M | 104M | 38.5k |
+| 05c | 04c + untied embeddings | 1.2464 | 1.2682 | 1.1955 | 74.5M | 103M | 38.0k |
 
 ## Notes
 
@@ -42,3 +46,6 @@ Full configs and metrics for every run are in `results.jsonl`.
   1e-3 and 2e-3 tie. Batch 64 at 1e-3 is the new base recipe.
 - **04:** Muon gains 0.0246 over AdamW despite about 8% lower throughput (37.6k vs 40.6k tok/s). LR 6e-3 is far too
   high. LRs are in `match_rms_adamw` units, and AdamW stays on the embeddings and norm scales at 1e-3.  By Muon LR: 1e-3 → 1.2308, 2e-3 → 1.2358 (within noise), 3e-3 → 1.2491, 6e-3 → 1.3776. 5e-4 is untested.
+- **04e:** Muon LR is bracketed, with 5e-4 → 1.2393 on the low side of 1e-3. Muon at 1e-3 (04c) stays the base recipe.
+- **05:** compared against 04c (1.2308). QK-norm's 0.0076 gain is under the noise margin and needs a second seed.
+  Zero-init is a tie (0.0014). Untied embeddings are 0.0156 worse despite 16.8M more parameters, so rejected.
