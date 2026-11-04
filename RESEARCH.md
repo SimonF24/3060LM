@@ -12,7 +12,7 @@ In rough priority order. Each item gets a 45-minute run against the current best
 | Momentum warmup | Same bundle as above | NanoGPT speedrun #9 |
 | Bigram hash embedding | A large single-technique jump (1.748 → 1.655 min), and memory will limit the table size for us | NanoGPT speedrun #62 |
 | Batch size schedule | Batch size has been one of our biggest levers | NanoGPT speedrun #46 |
-| Growing sequence length | Cheap early steps, and already in `TODO.md` | NanoGPT speedrun #72, Parameter Golf |
+| Growing sequence length | Cheap early steps | NanoGPT speedrun #72, Parameter Golf |
 | Multi-token prediction | Extra training signal per token | NanoGPT speedrun #53 |
 | Untie the head at 2/3 of training | Untied from the start lost for us, but this may get the benefit without the early cost | NanoGPT speedrun #53 |
 | Sampled softmax during training | The head is about 26% of forward FLOPs | NanoGPT speedrun |
