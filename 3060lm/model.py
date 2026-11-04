@@ -27,6 +27,13 @@ class TransformerConfig:
     qk_norm: bool = False # RMSNorm each head's queries and keys, which bounds the attention logits
     zero_init_residual: bool = False # zero-init the residual-writing projections so each block starts as the identity
     tie_embeddings: bool = True # share weights between the token embedding and the output vocab projection
+    activation: str = "swiglu" # "swiglu", or "relu2", which drops the gate matrix and squares a ReLU
+    mlp_dim: int = 0 # hidden dimension of the MLP, 0 means the default rounding of 8/3 * model_dim
+    embed_dim: int = 0 # if > 0 and < model_dim, factorize the embedding and output head through this dimension
+    # Weight sharing: layers[loop_start:loop_end] run num_loops times in a row
+    loop_start: int = 0
+    loop_end: int = 0
+    num_loops: int = 1
     
     def __post_init__(self):
         if self.model_dim % self.num_heads != 0:
@@ -63,9 +70,12 @@ class TransformerBlock(nn.Module):
         # and other models
         # In the SwiGLU paper: https://arxiv.org/pdf/2002.05202, this variant is denoted FFN_SwiGLU
         expanded_dim = math.ceil(expanded_dim / 256) * 256 # round up to nearest multiple of 256
+        if config.mlp_dim > 0:
+            expanded_dim = config.mlp_dim
         self.mlp_expand = nn.Linear(config.model_dim, expanded_dim, bias=False)
         self.mlp_contract = nn.Linear(expanded_dim, config.model_dim, bias=False)
-        self.glu_gate = nn.Linear(config.model_dim, expanded_dim, bias=False)
+        if config.activation == "swiglu":
+            self.glu_gate = nn.Linear(config.model_dim, expanded_dim, bias=False)
         
         self.attention_prenorm = nn.RMSNorm(config.model_dim)
         self.mlp_prenorm = nn.RMSNorm(config.model_dim)
@@ -123,7 +133,10 @@ class TransformerBlock(nn.Module):
         # Apply second RMSNorm pre-norm
         x = self.mlp_prenorm(x)
         # Apply SwiGLU MLP and activation
-        x = self.mlp_contract(self.mlp_expand(x) * F.silu(self.glu_gate(x)))
+        if self.config.activation == "swiglu":
+            x = self.mlp_contract(self.mlp_expand(x) * F.silu(self.glu_gate(x)))
+        else:
+            x = self.mlp_contract(F.relu(self.mlp_expand(x)) ** 2)
         # Apply second residual connection
         x = x + x_orig
         return x
@@ -132,7 +145,12 @@ class Transformer(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
-        self.token_embedding = nn.Embedding(config.vocab_size, config.model_dim)
+        embed_dim = config.embed_dim if config.embed_dim > 0 else config.model_dim
+        self.token_embedding = nn.Embedding(config.vocab_size, embed_dim)
+        self.factorized = embed_dim < config.model_dim
+        if self.factorized:
+            self.embed_in = nn.Linear(embed_dim, config.model_dim, bias=False)
+            self.embed_out = nn.Linear(config.model_dim, embed_dim, bias=False)
         
         # Compute RoPE frequencies
         # RoPE paper: https://arxiv.org/pdf/2104.09864
@@ -156,7 +174,7 @@ class Transformer(nn.Module):
         ])
         
         self.vocab_prenorm = nn.RMSNorm(config.model_dim)
-        self.vocab_projection = nn.Linear(config.model_dim, config.vocab_size, bias=False)
+        self.vocab_projection = nn.Linear(embed_dim, config.vocab_size, bias=False)
         if config.tie_embeddings:
             self.vocab_projection.weight = self.token_embedding.weight # weight tying
         # This makes the token embedding and output vocab projection share the same weights,
@@ -187,9 +205,17 @@ class Transformer(nn.Module):
             f"exceeds maximum sequence length ({self.config.max_seq_len})"
         ) # Otherwise we would be indexing out of bounds in the RoPE buffers
         x = self.token_embedding(input_tokens)
-        for layer in self.transformer_layers:
+        if self.factorized:
+            x = self.embed_in(x)
+        c = self.config
+        layers = list(self.transformer_layers)
+        if c.num_loops > 1:
+            layers = layers[:c.loop_start] + layers[c.loop_start:c.loop_end] * c.num_loops + layers[c.loop_end:]
+        for layer in layers:
             x = layer(x, self.rope_cos, self.rope_sin)
         x = self.vocab_prenorm(x)
+        if self.factorized:
+            x = self.embed_out(x)
         x = self.vocab_projection(x)
         return x
     

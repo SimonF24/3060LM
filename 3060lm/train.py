@@ -39,6 +39,12 @@ class Config:
     qk_norm: bool = False
     zero_init_residual: bool = False
     tie_embeddings: bool = True
+    activation: str = "swiglu"
+    mlp_dim: int = 0
+    embed_dim: int = 0
+    loop_start: int = 0
+    loop_end: int = 0
+    num_loops: int = 1
     # optimization
     batch_size: int = 16
     seq_len: int = 512
@@ -177,7 +183,9 @@ def main():
                                   num_layers=cfg.num_layers, num_heads=cfg.num_heads, num_kv_heads=cfg.num_kv_heads,
                                   max_seq_len=max(cfg.seq_len, cfg.eval_seq_len),
                                   qk_norm=cfg.qk_norm, zero_init_residual=cfg.zero_init_residual,
-                                  tie_embeddings=cfg.tie_embeddings)
+                                  tie_embeddings=cfg.tie_embeddings, activation=cfg.activation,
+                                  mlp_dim=cfg.mlp_dim, embed_dim=cfg.embed_dim, loop_start=cfg.loop_start,
+                                  loop_end=cfg.loop_end, num_loops=cfg.num_loops)
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")

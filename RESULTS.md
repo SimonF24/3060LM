@@ -26,6 +26,10 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 05a | 04c + QK-norm | 1.2232 | 1.2489 | 1.1632 | 57.7M | 100M | 37.2k |
 | 05b | 04c + zero-init output projections | 1.2294 | 1.2535 | 1.1731 | 57.7M | 104M | 38.5k |
 | 05c | 04c + untied embeddings | 1.2464 | 1.2682 | 1.1955 | 74.5M | 103M | 38.0k |
+| 04f | 04c, seed 1338 | 1.2301 | 1.2546 | 1.1731 | 57.7M | 104M | 38.6k |
+| 05d | 05a (QK-norm), seed 1338 | 1.2201 | 1.2466 | 1.1583 | 57.7M | 102M | 37.7k |
+| 06a | 04c + GQA, 2 KV heads | 1.2316 | 1.2550 | 1.1772 | 53.0M | 108M | 40.1k |
+| 06b | 04c + GQA, 4 KV heads | 1.2282 | 1.2519 | 1.1728 | 54.5M | 107M | 39.7k |
 
 ## Notes
 
@@ -45,7 +49,13 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **03e/03f:** at batch 64, raising the peak LR from 5e-4 to 1e-3 gains 0.0208 (0.0205 over 03a, the previous best).
   1e-3 and 2e-3 tie. Batch 64 at 1e-3 is the new base recipe.
 - **04:** Muon gains 0.0246 over AdamW despite about 8% lower throughput (37.6k vs 40.6k tok/s). LR 6e-3 is far too
-  high. LRs are in `match_rms_adamw` units, and AdamW stays on the embeddings and norm scales at 1e-3.  By Muon LR: 1e-3 → 1.2308, 2e-3 → 1.2358 (within noise), 3e-3 → 1.2491, 6e-3 → 1.3776. 5e-4 is untested.
+  high. LRs are in `match_rms_adamw` units, and AdamW stays on the embeddings and norm scales at 1e-3.
+  By Muon LR: 1e-3 → 1.2308, 2e-3 → 1.2358 (within noise), 3e-3 → 1.2491, 6e-3 → 1.3776. 5e-4 is untested.
 - **04e:** Muon LR is bracketed, with 5e-4 → 1.2393 on the low side of 1e-3. Muon at 1e-3 (04c) stays the base recipe.
 - **05:** compared against 04c (1.2308). QK-norm's 0.0076 gain is under the noise margin and needs a second seed.
   Zero-init is a tie (0.0014). Untied embeddings are 0.0156 worse despite 16.8M more parameters, so rejected.
+- **QK-norm accepted:** paired by seed it gains 0.0076 and 0.0100, averaging 1.2217 vs 1.2305 for the base recipe, and
+  improves both sources in both seeds. The base recipe's two seeds are only 0.0007 apart here, against 0.0061 in the
+  AdamW pair, so noise varies by recipe. QK-norm becomes part of the base recipe, with a gain of about 0.009.
+- **06:** GQA is a tie on score against the base recipe's 1.2305, despite 4-6% more tokens and 5-8% fewer parameters.
+  It stays off for now and may be worth revisiting for sizing or faster generation. GQA with QK-norm is untested.
