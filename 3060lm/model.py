@@ -31,6 +31,7 @@ class TransformerConfig:
     mlp_dim: int = 0 # hidden dimension of the MLP, 0 means the default rounding of 8/3 * model_dim
     embed_dim: int = 0 # if > 0 and < model_dim, factorize the embedding and output head through this dimension
     logit_softcap: float = 0.0 # if > 0, smoothly limit logits to +/- this value with a tanh
+    bigram_rows: int = 0 # if > 0, add a zero-initialized embedding of the hashed (previous, current) token pair
     embed_skip: bool = False # add the token embedding back in before every block, with a learned scale starting at 0
     # Weight sharing: layers[loop_start:loop_end] run num_loops times in a row
     loop_start: int = 0
@@ -149,6 +150,8 @@ class Transformer(nn.Module):
         self.config = config
         embed_dim = config.embed_dim if config.embed_dim > 0 else config.model_dim
         self.token_embedding = nn.Embedding(config.vocab_size, embed_dim)
+        if config.bigram_rows > 0:
+            self.bigram_embedding = nn.Embedding(config.bigram_rows, embed_dim)
         self.factorized = embed_dim < config.model_dim
         if self.factorized:
             self.embed_in = nn.Linear(embed_dim, config.model_dim, bias=False)
@@ -196,6 +199,9 @@ class Transformer(nn.Module):
             if isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
         
+        if config.bigram_rows > 0:
+            nn.init.zeros_(self.bigram_embedding.weight)
+
         # Scaling residual-writing projections by 1/sqrt(2 * num_layers) to stabilize training
         residual_std = 0.02 / math.sqrt(2 * config.num_layers)
         for name, p in self.named_parameters():
@@ -211,6 +217,10 @@ class Transformer(nn.Module):
             f"exceeds maximum sequence length ({self.config.max_seq_len})"
         ) # Otherwise we would be indexing out of bounds in the RoPE buffers
         x = self.token_embedding(input_tokens)
+        if self.config.bigram_rows > 0:
+            # Hash the pair into a table row. The first position has no previous token, so it uses id 0
+            previous = F.pad(input_tokens[:, :-1], (1, 0))
+            x = x + self.bigram_embedding((previous * 1_000_003 + input_tokens) % self.config.bigram_rows)
         if self.factorized:
             x = self.embed_in(x)
         c = self.config

@@ -42,6 +42,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 09b | 07a + windows start at document boundaries | 1.3059 | 1.3143 | 1.2863 | 48.2M | 116M | 43.0k |
 | 09c | 07a + LR floor at 10% of peak | 1.2148 | 1.2408 | 1.1542 | 48.2M | 118M | 43.8k |
 | 09d | 09c + EMA over the last 10%, decay 0.99 | 1.2143 | 1.2402 | 1.1537 | 48.2M | 118M | 43.8k |
+| 10a | 07a + softcap, LR floor, EMA | 1.2132 | 1.2392 | 1.1524 | 48.2M | 114M | 42.3k |
+| 10b | 10a, seed 1338 | 1.2107 | 1.2378 | 1.1476 | 48.2M | 115M | 42.7k |
+| 10c | 07a + sequence length 128, then 256 at 30%, 512 at 60% | 1.2124 | 1.2392 | 1.1499 | 48.2M | 118M | 43.6k |
+| 10d | 07a + effective batch 32, then 64 at 40%, 128 at 70% | 1.2086 | 1.2352 | 1.1464 | 48.2M | 117M | 43.4k |
+| 10e | 07a + embedding skip connections | 1.2154 | 1.2413 | 1.1549 | 48.2M | 117M | 43.5k |
 
 ## Notes
 
@@ -86,6 +91,10 @@ Full configs and metrics for every run are in `results.jsonl`.
   The speedrun aligns only the start of a stream that then runs through documents in order.
 - **Throughput:** identical recipes vary between about 42k and 44k tok/s, and 09b's 41.8k interval overlapped a CPU
   spike from other work, costing about 0.4% of its tokens.
+- **10a/10b:** the bundle averages 1.2120, a gain of 0.0046 that's positive in both seeds (0.0061 and 0.0029) but well
+  short of the 0.01 set beforehand, so it's not accepted. EMA also adds about 0.7GB of memory.
+- **10c-e:** against 1.2165, the accumulation schedule gains 0.0079, which needs a second seed. The sequence length
+  schedule (0.0041) and embedding skips (0.0011) tie.
 
 ## Benchmarks
 

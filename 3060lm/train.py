@@ -47,6 +47,7 @@ class Config:
     num_loops: int = 1
     logit_softcap: float = 0.0
     embed_skip: bool = False
+    bigram_rows: int = 0
     align_starts: bool = False  # start every training window at a document boundary
     # optimization
     batch_size: int = 16
@@ -164,7 +165,7 @@ def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, fl
     adamw_params, muon_params = [], []
     for name, p in model.named_parameters():
         use_muon = (cfg.muon_lr > 0 and p.ndim == 2
-                    and "token_embedding" not in name and "vocab_projection" not in name)
+                    and "embedding" not in name and "vocab_projection" not in name)
         (muon_params if use_muon else adamw_params).append(p)
     optimizers = [(torch.optim.AdamW(adamw_params, lr=cfg.lr, weight_decay=cfg.weight_decay,
                                      betas=(0.9, cfg.beta2), fused=True), cfg.lr)]
@@ -215,7 +216,8 @@ def main():
                                   tie_embeddings=cfg.tie_embeddings, activation=cfg.activation,
                                   mlp_dim=cfg.mlp_dim, embed_dim=cfg.embed_dim, loop_start=cfg.loop_start,
                                   loop_end=cfg.loop_end, num_loops=cfg.num_loops,
-                                  logit_softcap=cfg.logit_softcap, embed_skip=cfg.embed_skip)
+                                  logit_softcap=cfg.logit_softcap, embed_skip=cfg.embed_skip,
+                                  bigram_rows=cfg.bigram_rows)
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")
