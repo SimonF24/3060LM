@@ -33,6 +33,7 @@ class TransformerConfig:
     logit_softcap: float = 0.0 # if > 0, smoothly limit logits to +/- this value with a tanh
     bigram_rows: int = 0 # if > 0, add a zero-initialized embedding of the hashed (previous, current) token pair
     embed_skip: bool = False # add the token embedding back in before every block, with a learned scale starting at 0
+    value_residual: bool = False # mix the first layer's attention values into every later layer's, with a learned weight
     # Weight sharing: layers[loop_start:loop_end] run num_loops times in a row
     loop_start: int = 0
     loop_end: int = 0
@@ -52,6 +53,8 @@ class TransformerBlock(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
+        if config.value_residual:
+            self.value_mix = nn.Parameter(torch.tensor(0.5))
         
         # Projection matrices for query, key, and value
         # These will be reshaped to (num_heads, head_dim) for multi-head attention
@@ -95,7 +98,8 @@ class TransformerBlock(nn.Module):
         # Apply RoPE: x_rotated = x * cos + x_swapped * sin
         return x * rope_cos[:seq_len] + x_swapped * rope_sin[:seq_len]
         
-    def forward(self, x: torch.Tensor, rope_cos: torch.Tensor, rope_sin: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, rope_cos: torch.Tensor, rope_sin: torch.Tensor,
+                v_first: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len, model_dim = x.size()
         # Save the original input for residual connection
         x_orig = x
@@ -112,6 +116,11 @@ class TransformerBlock(nn.Module):
         q = q.view(batch_size, seq_len, self.config.num_heads, self.config.head_dim).transpose(1, 2)
         k = k.view(batch_size, seq_len, self.config.num_kv_heads, self.config.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len, self.config.num_kv_heads, self.config.head_dim).transpose(1, 2)
+        # Value residual: later layers blend in the first layer's values, which are returned for them to use
+        if v_first is None:
+            v_first = v
+        elif self.config.value_residual:
+            v = self.value_mix * v + (1 - self.value_mix) * v_first
         if self.config.qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
@@ -142,7 +151,7 @@ class TransformerBlock(nn.Module):
             x = self.mlp_contract(F.relu(self.mlp_expand(x)) ** 2)
         # Apply second residual connection
         x = x + x_orig
-        return x
+        return x, v_first
 
 class Transformer(nn.Module):
     def __init__(self, config: TransformerConfig):
@@ -228,10 +237,11 @@ class Transformer(nn.Module):
         if c.num_loops > 1:
             layers = layers[:c.loop_start] + layers[c.loop_start:c.loop_end] * c.num_loops + layers[c.loop_end:]
         embedded = x
+        v_first = None
         for i, layer in enumerate(layers):
             if c.embed_skip:
                 x = x + self.embed_skip[i] * embedded
-            x = layer(x, self.rope_cos, self.rope_sin)
+            x, v_first = layer(x, self.rope_cos, self.rope_sin, v_first if i > 0 else None)
         x = self.vocab_prenorm(x)
         if self.factorized:
             x = self.embed_out(x)

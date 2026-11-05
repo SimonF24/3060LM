@@ -62,6 +62,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 13c | 12b with 8,192 random tokens | 1.1969 | 1.2245 | 1.1326 | 48.2M | 134M | 49.4k |
 | 13d | 12b, sampling until 85% | 1.1882 | 1.2167 | 1.1217 | 48.2M | 153M | 56.8k |
 | 13e | 12b + 16k vocabulary | 1.1979 | 1.2295 | 1.1241 | 39.9M | 154M | 57.1k |
+| 14a | 13d (sampling until 85%), seed 1338 | 1.1882 | 1.2172 | 1.1206 | 48.2M | 153M | 56.8k |
+| 14b | 12b, sampling until 95% | 1.1964 | 1.2248 | 1.1302 | 48.2M | 158M | 58.5k |
+| 14c | 12b, sampling throughout | 1.2556 | 1.2853 | 1.1861 | 48.2M | 162M | 59.8k |
+| 14d | 13d with 1 random token | 1.1874 | 1.2159 | 1.1210 | 48.2M | 159M | 59.0k |
+| 14e | 12b + Muon momentum 0.85 to 0.95 over 300 steps | 1.1901 | 1.2182 | 1.1244 | 48.2M | 148M | 54.9k |
 
 ## Notes
 
@@ -132,6 +137,14 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **13d:** sampling until 85% gains 0.0034 on the same seed, which needs a second seed.
 - **13e:** with sampling, 16k is 0.0063 worse than 32k, losing on FineWeb-Edu (1.2295 vs 1.2196) and tying on FineMath.
   The head is already cheap, so 16k's speed advantage shrinks to 7%.
+- **Sampling until 85% accepted:** 1.1882 on both seeds, 0.0037 better than 1.1919 on average (paired 0.0034 and
+  0.0040), better on both sources in both seeds, and faster. It's under 0.01, but like the batch schedule it's
+  consistent and free, unlike the 10a bundle, which also cost memory and speed.
+- **14b/14c:** sampling until 95% is 0.0082 worse, and sampling throughout is 0.0674 worse, so the model needs a
+  full softmax phase of roughly 15% to calibrate across the whole vocabulary.
+- **14d:** sampling only each batch's targets plus one random token ties 2,048 (1.1874 vs 1.1882) at 4% more tokens per
+  second. It's a simplification rather than a gain, so 2,048 stays for now.
+- **14e:** momentum warmup ties (0.0015 better). The ramp is from memory of the speedrun, not checked against its code.
 
 ## Benchmarks
 
