@@ -10,7 +10,7 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 Pretraining experiments are in progress. The final long run, chat fine-tuning and RL haven't been done yet.
 
-Best accepted score so far: **1.2165 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
+Best accepted score so far: **1.2086 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
 
 | Change | Weighted BPB |
 |---|---:|
@@ -22,6 +22,7 @@ Best accepted score so far: **1.2165 bits per byte, down from a baseline of 1.37
 | Muon on hidden layers (average of 2 seeds) | 1.2305 |
 | QK-norm (average of 2 seeds) | 1.2217 |
 | ReLU² replaces SwiGLU (average of 2 seeds) | 1.2165 |
+| Effective batch schedule (average of 2 seeds) | 1.2086 |
 
 See [RESULTS.md](RESULTS.md) for every run, including the ones that didn't help, and `results.jsonl` for full configs and metrics.
 
@@ -40,7 +41,7 @@ Each experiment trains for a fixed **45 minutes** of wall-clock time, so speedup
 - **Model:** 12 layers, 512 dimensions, 8 heads and 48.2M parameters, with RoPE, ReLU² MLPs, RMSNorm, QK-norm and tied embeddings.
 - **Optimizers:** Muon (LR 1e-3) on the hidden-layer weights, AdamW (LR 1e-3) on the embeddings and norm scales.
 - **Schedule:** 200-step warmup, then a linear decay to zero over the last 40% of the time budget.
-- **Batch:** effective 64×512, as 16×512 with 4 accumulation steps.
+- **Batch:** effective 32×512, then 64×512 at 40% of the budget and 128×512 at 70%, as 16×512 with accumulation.
 
 ## Dataset
 
@@ -68,7 +69,7 @@ python download_data.py  # speedrun shards, about 3 GB (--all fetches about 10 G
 python prepare_data.py   # trains the tokenizer, tokenizes every shard on disk
 
 python train.py --name=my-run --compile=true --warmup_steps=200 --warmdown_frac=0.4 --beta2=0.95 \
-    --batch_size=16 --grad_accum=4 --lr=1e-3 --muon_lr=1e-3 --qk_norm=true --activation=relu2
+    --batch_size=16 '--accum_schedule=[[0,2],[0.4,4],[0.7,8]]' --lr=1e-3 --muon_lr=1e-3 --qk_norm=true --activation=relu2
 ```
 
 Any field of `Config` in `train.py` can be set with `--field=value`. Results are appended to `results.jsonl`, and logs and the final model go to `training_runs/<name>/`.

@@ -22,13 +22,16 @@ ROOT = Path(__file__).parent.parent
 RAW = ROOT / "data/raw"
 # Pass --out=<path under the repo root> to keep a larger tokenized set apart from the speedrun data
 OUT = ROOT / next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--out=")), "data/tokenized")
-TOKENIZER_PATH = ROOT / "tokenizer/stem32k.json"
+# Pass --vocab=<size> to train a differently sized tokenizer
+VOCAB_SIZE = int(next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--vocab=")), 32_768))
+TOKENIZER_PATH = ROOT / f"tokenizer/stem{VOCAB_SIZE // 1024}k.json"
 
 SOURCES = {
     "fineweb-edu": sorted((RAW / "fineweb-edu/sample/10BT").glob("*.parquet")),
     "finemath": sorted((RAW / "finemath/finemath-4plus").glob("*.parquet")),
 }
-VOCAB_SIZE = 32_768
+if "--speedrun-shards" in sys.argv:  # only the shards speedruns use, even if more have been downloaded
+    SOURCES = {"fineweb-edu": SOURCES["fineweb-edu"][:1], "finemath": SOURCES["finemath"][:2]}
 TOKENIZER_SAMPLE_BYTES = 400_000_000  # per source, keeps tokenizer training RAM modest
 VAL_DOCS = 5_000
 

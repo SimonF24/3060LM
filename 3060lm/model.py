@@ -211,7 +211,7 @@ class Transformer(nn.Module):
                 else:
                     nn.init.normal_(p, mean=0.0, std=residual_std)
 
-    def forward(self, input_tokens: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_tokens: torch.Tensor, return_hidden: bool = False) -> torch.Tensor:
         assert input_tokens.size(1) <= self.config.max_seq_len, (
             f"Input sequence length ({input_tokens.size(1)}) "
             f"exceeds maximum sequence length ({self.config.max_seq_len})"
@@ -235,6 +235,8 @@ class Transformer(nn.Module):
         x = self.vocab_prenorm(x)
         if self.factorized:
             x = self.embed_out(x)
+        if return_hidden:
+            return x # the state just before the output head, so a caller can score only some of the vocab
         x = self.vocab_projection(x)
         if c.logit_softcap > 0:
             x = c.logit_softcap * torch.tanh(x / c.logit_softcap)

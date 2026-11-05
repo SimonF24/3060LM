@@ -74,6 +74,9 @@ class Config:
     eval_seq_len: int = 512  # fixed across experiments so BPB numbers stay comparable
     eval_batch_size: int = 32
     eval_max_tokens: int = 2_000_000  # per source
+    sampled_k: int = 0  # if > 0, score each batch's targets plus this many random tokens instead of the full vocab
+    sampled_until: float = 0.7  # fraction of the budget after which training uses the full softmax again
+    untie_at: float = 0.0  # if > 0, give the output head its own copy of the embedding at this fraction of the budget
     log_every: int = 50
     eval_every_min: float = 0.0  # if > 0, also report val BPB during training
     ckpt_every_min: float = 0.0  # if > 0, save a resumable checkpoint to training_runs/<name>/latest.pt
@@ -231,6 +234,8 @@ def main():
     loss_ema = None
     ckpt_path = run_dir / "latest.pt"
     if cfg.resume:
+        if cfg.untie_at > 0:
+            raise ValueError("Resuming isn't supported with untie_at")
         ckpt = torch.load(ckpt_path, map_location="cuda")
         model.load_state_dict(ckpt["model"])
         for (optimizer, _), state in zip(optimizers, ckpt["optimizers"]):
@@ -255,7 +260,14 @@ def main():
         for _ in range(grad_accum):
             inputs, targets = data.get_batch(cfg.batch_size * cfg.seq_len // seq_len, seq_len)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                logits = train_model(inputs)
+                if cfg.sampled_k > 0 and progress < cfg.sampled_until:
+                    hidden = train_model(inputs, return_hidden=True)
+                    random_ids = torch.randint(0, cfg.vocab_size, (cfg.sampled_k,), device=targets.device)
+                    candidates = torch.cat([targets.flatten(), random_ids]).unique()
+                    logits = hidden @ model.vocab_projection.weight[candidates].T
+                    targets = torch.searchsorted(candidates, targets)
+                else:
+                    logits = train_model(inputs)
                 loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
             (loss / grad_accum).backward()
             tokens += inputs.numel()
@@ -264,6 +276,12 @@ def main():
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         step += 1
+        if cfg.untie_at > 0 and progress >= cfg.untie_at and model_cfg.tie_embeddings:
+            head = torch.nn.Parameter(model.vocab_projection.weight.detach().clone())
+            model.vocab_projection.weight = head
+            model_cfg.tie_embeddings = False  # so the saved checkpoint loads with a separate head
+            optimizers[0][0].add_param_group({"params": [head]})
+            train_model = torch.compile(model) if cfg.compile else model
         if cfg.ema_start_frac > 0 and train_time / budget_s >= cfg.ema_start_frac:
             with torch.no_grad():
                 if ema is None:

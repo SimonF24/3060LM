@@ -47,6 +47,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 10c | 07a + sequence length 128, then 256 at 30%, 512 at 60% | 1.2124 | 1.2392 | 1.1499 | 48.2M | 118M | 43.6k |
 | 10d | 07a + effective batch 32, then 64 at 40%, 128 at 70% | 1.2086 | 1.2352 | 1.1464 | 48.2M | 117M | 43.4k |
 | 10e | 07a + embedding skip connections | 1.2154 | 1.2413 | 1.1549 | 48.2M | 117M | 43.5k |
+| 11a | 10d (batch schedule), seed 1338 | 1.2085 | 1.2359 | 1.1445 | 48.2M | 116M | 43.1k |
+| 11b | 10d + softcap, LR floor, EMA | 1.2074 | 1.2343 | 1.1447 | 48.2M | 112M | 41.6k |
+| 11c | 10d + sequence length schedule | 1.2048 | 1.2321 | 1.1411 | 48.2M | 118M | 43.7k |
+| 11d | 07a + Muon momentum 0.97 | 1.2159 | 1.2418 | 1.1557 | 48.2M | 118M | 43.5k |
+| 11e | 07a + hashed bigram embedding, 65,536 rows | 1.2216 | 1.2470 | 1.1623 | 81.8M | 112M | 41.5k |
 
 ## Notes
 
@@ -95,6 +100,12 @@ Full configs and metrics for every run are in `results.jsonl`.
   short of the 0.01 set beforehand, so it's not accepted. EMA also adds about 0.7GB of memory.
 - **10c-e:** against 1.2165, the accumulation schedule gains 0.0079, which needs a second seed. The sequence length
   schedule (0.0041) and embedding skips (0.0011) tie.
+- **Batch schedule accepted:** effective batch 32, then 64 at 40% and 128 at 70% scores 1.2086 and 1.2085, averaging
+  0.0080 better than 1.2165. Paired gains are 0.0107 and 0.0051, it improves both sources in both seeds, and it's free.
+- **11b:** the bundle adds only 0.0011 to the batch schedule while costing memory and speed, so it's dropped.
+- **11c:** 0.0037 better than the batch schedule alone, the lowest score yet, but it needs a second seed.
+- **11d/11e:** higher Muon momentum ties. The bigram table is 0.0051 worse despite 70% more parameters, so it's rejected
+  at this scale, though it may need more tokens to fill such a large table.
 
 ## Benchmarks
 
