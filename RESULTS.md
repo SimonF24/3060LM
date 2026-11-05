@@ -38,6 +38,10 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 08a | 07a (QK-norm + ReLU²), seed 1338 | 1.2136 | 1.2405 | 1.1506 | 48.2M | 118M | 43.8k |
 | 08b | 07a + MLP width 2048 | 1.2156 | 1.2413 | 1.1557 | 54.5M | 109M | 40.3k |
 | 08c | 07a + GQA, 4 KV heads | 1.2164 | 1.2418 | 1.1571 | 45.1M | 119M | 44.2k |
+| 09a | 07a + logit softcap 15 | 1.2154 | 1.2416 | 1.1543 | 48.2M | 113M | 41.8k |
+| 09b | 07a + windows start at document boundaries | 1.3059 | 1.3143 | 1.2863 | 48.2M | 116M | 43.0k |
+| 09c | 07a + LR floor at 10% of peak | 1.2148 | 1.2408 | 1.1542 | 48.2M | 118M | 43.8k |
+| 09d | 09c + EMA over the last 10%, decay 0.99 | 1.2143 | 1.2402 | 1.1537 | 48.2M | 118M | 43.8k |
 
 ## Notes
 
@@ -75,6 +79,13 @@ Full configs and metrics for every run are in `results.jsonl`.
   recipes also varied in throughput (42.0k vs 43.8k tok/s), which likely contributes to the gap between seeds.
 - **08b/08c:** both tie 07a, the same-seed comparison, gaining 0.0037 and 0.0029. A wider MLP and GQA stay off for now.
   Both are worth another look when choosing model shape on longer runs.
+- **09:** none clears the margin against the base recipe's 2-seed average of 1.2165. Comparing against 07a alone would
+  flatter them, because it ran slower (42.0k tok/s). 09c and 09d ran at 08a's throughput and don't beat 08a's 1.2136.
+- **09b:** far worse, but not a fair test of the speedrun's technique. Every window starts at a document start here,
+  so the model rarely sees text past the first 512 tokens of a document, unlike the mid-document windows in val.
+  The speedrun aligns only the start of a stream that then runs through documents in order.
+- **Throughput:** identical recipes vary between about 42k and 44k tok/s, and 09b's 41.8k interval overlapped a CPU
+  spike from other work, costing about 0.4% of its tokens.
 
 ## Benchmarks
 

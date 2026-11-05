@@ -31,6 +31,7 @@ class TransformerConfig:
     mlp_dim: int = 0 # hidden dimension of the MLP, 0 means the default rounding of 8/3 * model_dim
     embed_dim: int = 0 # if > 0 and < model_dim, factorize the embedding and output head through this dimension
     logit_softcap: float = 0.0 # if > 0, smoothly limit logits to +/- this value with a tanh
+    embed_skip: bool = False # add the token embedding back in before every block, with a learned scale starting at 0
     # Weight sharing: layers[loop_start:loop_end] run num_loops times in a row
     loop_start: int = 0
     loop_end: int = 0
@@ -174,6 +175,10 @@ class Transformer(nn.Module):
             TransformerBlock(config) for _ in range(config.num_layers)
         ])
         
+        if config.embed_skip:
+            if config.num_loops > 1:
+                raise ValueError("embed_skip doesn't support looped layers")
+            self.embed_skip = nn.Parameter(torch.zeros(config.num_layers))
         self.vocab_prenorm = nn.RMSNorm(config.model_dim)
         self.vocab_projection = nn.Linear(embed_dim, config.vocab_size, bias=False)
         if config.tie_embeddings:
@@ -212,7 +217,10 @@ class Transformer(nn.Module):
         layers = list(self.transformer_layers)
         if c.num_loops > 1:
             layers = layers[:c.loop_start] + layers[c.loop_start:c.loop_end] * c.num_loops + layers[c.loop_end:]
-        for layer in layers:
+        embedded = x
+        for i, layer in enumerate(layers):
+            if c.embed_skip:
+                x = x + self.embed_skip[i] * embedded
             x = layer(x, self.rope_cos, self.rope_sin)
         x = self.vocab_prenorm(x)
         if self.factorized:

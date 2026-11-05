@@ -46,6 +46,7 @@ class Config:
     loop_end: int = 0
     num_loops: int = 1
     logit_softcap: float = 0.0
+    embed_skip: bool = False
     align_starts: bool = False  # start every training window at a document boundary
     # optimization
     batch_size: int = 16
@@ -54,6 +55,10 @@ class Config:
     weight_decay: float = 0.01
     grad_accum: int = 1  # micro-batches per optimizer step, the effective batch is batch_size * grad_accum
     grad_clip: float = 1.0
+    # Schedules are [[progress, value], ...], where each value applies from that fraction of the budget onward.
+    # The micro-batch shrinks as seq_len grows, so the tokens per micro-batch (and memory) stay about constant.
+    seq_schedule: list = field(default_factory=list)
+    accum_schedule: list = field(default_factory=list)
     beta2: float = 0.999
     muon_lr: float = 0.0  # if > 0, 2D hidden layer weights use Muon at this LR, everything else stays on AdamW
     muon_momentum: float = 0.95
@@ -173,6 +178,15 @@ def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, fl
     return optimizers
 
 
+def stage_value(schedule: list, progress: float, default: int) -> int:
+    """Returns the value of the last schedule stage that has started, or default without a schedule."""
+    value = default
+    for start, stage in schedule:
+        if progress >= start:
+            value = stage
+    return value
+
+
 def lr_schedule(step: int, progress: float, cfg: Config) -> float:
     """LR multiplier: linear warmup over steps, then constant, then linear decay to min_lr_frac over the
     last warmdown_frac of the wall-clock budget (time based, since runs have a fixed time budget)"""
@@ -201,7 +215,7 @@ def main():
                                   tie_embeddings=cfg.tie_embeddings, activation=cfg.activation,
                                   mlp_dim=cfg.mlp_dim, embed_dim=cfg.embed_dim, loop_start=cfg.loop_start,
                                   loop_end=cfg.loop_end, num_loops=cfg.num_loops,
-                                  logit_softcap=cfg.logit_softcap)
+                                  logit_softcap=cfg.logit_softcap, embed_skip=cfg.embed_skip)
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{cfg.name}: {n_params / 1e6:.1f}M parameters")
@@ -233,12 +247,15 @@ def main():
         for optimizer, base_lr in optimizers:
             for group in optimizer.param_groups:
                 group["lr"] = base_lr * lr_scale
-        for _ in range(cfg.grad_accum):
-            inputs, targets = data.get_batch(cfg.batch_size, cfg.seq_len)
+        progress = train_time / budget_s
+        grad_accum = stage_value(cfg.accum_schedule, progress, cfg.grad_accum)
+        seq_len = stage_value(cfg.seq_schedule, progress, cfg.seq_len)
+        for _ in range(grad_accum):
+            inputs, targets = data.get_batch(cfg.batch_size * cfg.seq_len // seq_len, seq_len)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 logits = train_model(inputs)
                 loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
-            (loss / cfg.grad_accum).backward()
+            (loss / grad_accum).backward()
             tokens += inputs.numel()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         for optimizer, _ in optimizers:
