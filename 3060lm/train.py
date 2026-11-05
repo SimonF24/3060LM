@@ -47,6 +47,7 @@ class Config:
     num_loops: int = 1
     logit_softcap: float = 0.0
     embed_skip: bool = False
+    value_residual: bool = False
     bigram_rows: int = 0
     align_starts: bool = False  # start every training window at a document boundary
     # optimization
@@ -220,7 +221,7 @@ def main():
                                   tie_embeddings=cfg.tie_embeddings, activation=cfg.activation,
                                   mlp_dim=cfg.mlp_dim, embed_dim=cfg.embed_dim, loop_start=cfg.loop_start,
                                   loop_end=cfg.loop_end, num_loops=cfg.num_loops,
-                                  logit_softcap=cfg.logit_softcap, embed_skip=cfg.embed_skip,
+                                  logit_softcap=cfg.logit_softcap, embed_skip=cfg.embed_skip, value_residual=cfg.value_residual,
                                   bigram_rows=cfg.bigram_rows)
     model = Transformer(model_cfg).cuda()
     n_params = sum(p.numel() for p in model.parameters())
