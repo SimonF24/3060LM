@@ -57,6 +57,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 12c | 10d + untie the head at 67% | 1.2144 | 1.2405 | 1.1535 | 48.2M | 111M | 41.2k |
 | 12d | 10d + 16k vocabulary | 1.2080 | 1.2393 | 1.1351 | 39.9M | 135M | 49.8k |
 | 12e | 07a + effective batch 16, then 32 at 25%, 64 at 50%, 128 at 75% | 1.2169 | 1.2429 | 1.1562 | 48.2M | 107M | 39.7k |
+| 13a | 12b (sampled softmax), seed 1338 | 1.1922 | 1.2209 | 1.1253 | 48.2M | 143M | 53.0k |
+| 13b | 12b with 512 random tokens | 1.1910 | 1.2193 | 1.1248 | 48.2M | 144M | 53.3k |
+| 13c | 12b with 8,192 random tokens | 1.1969 | 1.2245 | 1.1326 | 48.2M | 134M | 49.4k |
+| 13d | 12b, sampling until 85% | 1.1882 | 1.2167 | 1.1217 | 48.2M | 153M | 56.8k |
+| 13e | 12b + 16k vocabulary | 1.1979 | 1.2295 | 1.1241 | 39.9M | 154M | 57.1k |
 
 ## Notes
 
@@ -120,19 +125,27 @@ Full configs and metrics for every run are in `results.jsonl`.
   6.5GB. It scores better on FineMath (1.1351 vs 1.1464) and worse on FineWeb-Edu (1.2393 vs 1.2352). The score covers
   approximately the same val text as other runs, since the evaluated prefix is set in tokens.
 - **12e:** the wider batch schedule is 0.0083 worse, so 32, 64 and 128 stays.
+- **Sampled softmax accepted:** 1.1916 and 1.1922, averaging 1.1919, with paired gains of 0.0170 and 0.0163 on both
+  sources.
+- **13b/13c:** 512 random tokens ties 2,048 at the same speed, probably because each batch's own targets dominate the
+  candidate set. 8,192 is 0.0053 worse and slower.
+- **13d:** sampling until 85% gains 0.0034 on the same seed, which needs a second seed.
+- **13e:** with sampling, 16k is 0.0063 worse than 32k, losing on FineWeb-Edu (1.2295 vs 1.2196) and tying on FineMath.
+  The head is already cheap, so 16k's speed advantage shrinks to 7%.
 
 ## Benchmarks
 
 Scored by total log-probability of each option with `3060lm/evaluate.py`, as accuracy ± standard error.
 
-| Benchmark | Chance | 00 baseline | 08a best recipe |
-|---|---:|---:|---:|
-| HellaSwag (n=10,042) | 25.0% | 25.95 ± 0.44% | 26.37 ± 0.44% |
-| PIQA (n=1,838) | 50.0% | 55.39 ± 1.16% | 56.96 ± 1.15% |
-| ARC-Easy (n=2,376) | 25.0% | 34.26 ± 0.97% | 41.16 ± 1.01% |
-| ARC-Challenge (n=1,172) | 25.0% | 16.81 ± 1.09% | 18.86 ± 1.14% |
+| Benchmark | Chance | 00 baseline | 08a | 12b sampled softmax |
+|---|---:|---:|---:|---:|
+| HellaSwag (n=10,042) | 25.0% | 25.95 ± 0.44% | 26.37 ± 0.44% | 26.35 ± 0.44% |
+| PIQA (n=1,838) | 50.0% | 55.39 ± 1.16% | 56.96 ± 1.15% | 56.69 ± 1.16% |
+| ARC-Easy (n=2,376) | 25.0% | 34.26 ± 0.97% | 41.16 ± 1.01% | 42.21 ± 1.01% |
+| ARC-Challenge (n=1,172) | 25.0% | 16.81 ± 1.09% | 18.86 ± 1.14% | 17.75 ± 1.12% |
 
-Only the ARC-Easy gain is clearly larger than its error. Summed log-probability favors short options, and on
+Only the gain on ARC-Easy from baseline to 08a is clearly larger than its error, and 12b's lower BPB doesn't show up on
+any benchmark. Summed log-probability favors short options, and on
 ARC-Challenge always picking the shortest option scores 22.7% and the longest 27.8%, which partly explains the
 below-chance score. The models score below even the shortest-option rule, so length isn't the full explanation.
 The bias applies to both models, so compare them with each other rather than reading these as absolute ability.

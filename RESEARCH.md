@@ -9,7 +9,6 @@ In rough priority order. Each item gets a 45-minute run against the current best
 | Idea | Why try it | Source |
 |---|---|---|
 | Value skip connections | Part of a large record jump, though embedding skips alone tied for us (10e) | NanoGPT speedrun #9 |
-| Momentum warmup | Same bundle as above | NanoGPT speedrun #9 |
 | Multi-token prediction | Extra training signal per token | NanoGPT speedrun #53 |
 | Profile the throughput gap | Effective batch 32 ran at 43.1k tok/s and 64 at 40.5k, for an unknown reason | Our runs |
 | Profile real GPU time per component | The compute shares here are FLOP estimates, not measurements | Our runs |

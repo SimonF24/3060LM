@@ -63,6 +63,7 @@ class Config:
     beta2: float = 0.999
     muon_lr: float = 0.0  # if > 0, 2D hidden layer weights use Muon at this LR, everything else stays on AdamW
     muon_momentum: float = 0.95
+    muon_momentum_start: float = 0.0  # if > 0, Muon momentum ramps from this to muon_momentum over the first 300 steps
     warmup_steps: int = 0
     warmdown_frac: float = 0.0  # fraction of the time budget spent linearly decaying the LR to min_lr_frac
     min_lr_frac: float = 0.0  # final LR as a fraction of the peak LR
@@ -254,6 +255,9 @@ def main():
         for optimizer, base_lr in optimizers:
             for group in optimizer.param_groups:
                 group["lr"] = base_lr * lr_scale
+                if cfg.muon_momentum_start > 0 and "momentum" in group:
+                    frac = min(step / 300, 1)
+                    group["momentum"] = cfg.muon_momentum_start + (cfg.muon_momentum - cfg.muon_momentum_start) * frac
         progress = train_time / budget_s
         grad_accum = stage_value(cfg.accum_schedule, progress, cfg.grad_accum)
         seq_len = stage_value(cfg.seq_schedule, progress, cfg.seq_len)
