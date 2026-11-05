@@ -11,9 +11,6 @@ In rough priority order. Each item gets a 45-minute run against the current best
 | Value skip connections | Part of a large record jump, though embedding skips alone tied for us (10e) | NanoGPT speedrun #9 |
 | Momentum warmup | Same bundle as above | NanoGPT speedrun #9 |
 | Multi-token prediction | Extra training signal per token | NanoGPT speedrun #53 |
-| Untie the head at 2/3 of training | Untied from the start lost for us, but this may get the benefit without the early cost | NanoGPT speedrun #53 |
-| Sampled softmax during training | The head is about 26% of forward FLOPs | NanoGPT speedrun |
-| Smaller vocabulary (8k-16k) | Cuts head cost directly, but means more tokens per byte and needs retokenizing | Parameter Golf |
 | Profile the throughput gap | Effective batch 32 ran at 43.1k tok/s and 64 at 40.5k, for an unknown reason | Our runs |
 | Profile real GPU time per component | The compute shares here are FLOP estimates, not measurements | Our runs |
 | NVIDIA ClimbMix dataset | Cut nanochat's time-to-GPT-2 from 2.76 to 2.02 hours, but needs its own comparison | nanochat |

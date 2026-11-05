@@ -52,6 +52,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 11c | 10d + sequence length schedule | 1.2048 | 1.2321 | 1.1411 | 48.2M | 118M | 43.7k |
 | 11d | 07a + Muon momentum 0.97 | 1.2159 | 1.2418 | 1.1557 | 48.2M | 118M | 43.5k |
 | 11e | 07a + hashed bigram embedding, 65,536 rows | 1.2216 | 1.2470 | 1.1623 | 81.8M | 112M | 41.5k |
+| 12a | 11c (batch and sequence schedules), seed 1338 | 1.2100 | 1.2366 | 1.1481 | 48.2M | 112M | 41.6k |
+| 12b | 10d + sampled softmax, 2,048 random tokens, until 70% | 1.1916 | 1.2196 | 1.1262 | 48.2M | 144M | 53.3k |
+| 12c | 10d + untie the head at 67% | 1.2144 | 1.2405 | 1.1535 | 48.2M | 111M | 41.2k |
+| 12d | 10d + 16k vocabulary | 1.2080 | 1.2393 | 1.1351 | 39.9M | 135M | 49.8k |
+| 12e | 07a + effective batch 16, then 32 at 25%, 64 at 50%, 128 at 75% | 1.2169 | 1.2429 | 1.1562 | 48.2M | 107M | 39.7k |
 
 ## Notes
 
@@ -106,6 +111,15 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **11c:** 0.0037 better than the batch schedule alone, the lowest score yet, but it needs a second seed.
 - **11d/11e:** higher Muon momentum ties. The bigram table is 0.0051 worse despite 70% more parameters, so it's rejected
   at this scale, though it may need more tokens to fill such a large table.
+- **12a:** the sequence schedule is 0.0015 worse on this seed, after being 0.0037 better on the other. It averages 1.2074,
+  a tie with the batch schedule alone, so 11c's lead was noise and it's rejected.
+- **12b:** the largest gain since Muon, 0.0170 better than 1.2086, with 23% more tokens because most of the head isn't
+  computed for the first 70%. BPB is still scored with the full softmax. It's being repeated on a second seed.
+- **12c:** untying late is 0.0058 worse and adds 67MB to the checkpoint, so it's rejected at this length.
+- **12d:** a tie on BPB at 1.2080, with 17% fewer parameters, 15% more tokens per second and 4.5GB peak memory instead of
+  6.5GB. It scores better on FineMath (1.1351 vs 1.1464) and worse on FineWeb-Edu (1.2393 vs 1.2352). The score covers
+  approximately the same val text as other runs, since the evaluated prefix is set in tokens.
+- **12e:** the wider batch schedule is 0.0083 worse, so 32, 64 and 128 stays.
 
 ## Benchmarks
 
