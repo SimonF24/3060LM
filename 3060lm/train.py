@@ -61,6 +61,7 @@ class Config:
     # The micro-batch shrinks as seq_len grows, so the tokens per micro-batch (and memory) stay about constant.
     seq_schedule: list = field(default_factory=list)
     accum_schedule: list = field(default_factory=list)
+    mix_schedule: list = field(default_factory=list)  # [[progress, {source: weight}], ...], the training mix by stage; val BPB still uses mix
     beta2: float = 0.999
     muon_lr: float = 0.0  # if > 0, 2D hidden layer weights use Muon at this LR, everything else stays on AdamW
     muon_momentum: float = 0.95
@@ -109,6 +110,10 @@ class MixedSource:
         self.rng = np.random.default_rng(seed)
         # Every document starts with <|endoftext|>, which has token id 0
         self.doc_starts = {n: np.flatnonzero(a == 0) for n, a in self.data.items()} if align_starts else None
+
+    def set_mix(self, mix: dict):
+        self.weights = np.array([mix[n] for n in self.names], dtype=np.float64)
+        self.weights /= self.weights.sum()
 
     def get_batch(self, batch_size: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         sources = self.rng.choice(len(self.names), size=batch_size, p=self.weights)
@@ -264,6 +269,8 @@ def main():
         progress = train_time / budget_s
         grad_accum = stage_value(cfg.accum_schedule, progress, cfg.grad_accum)
         seq_len = stage_value(cfg.seq_schedule, progress, cfg.seq_len)
+        if cfg.mix_schedule:
+            data.set_mix(stage_value(cfg.mix_schedule, progress, cfg.mix))
         for _ in range(grad_accum):
             inputs, targets = data.get_batch(cfg.batch_size * cfg.seq_len // seq_len, seq_len)
             with torch.autocast("cuda", dtype=torch.bfloat16):
