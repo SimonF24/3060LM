@@ -25,13 +25,15 @@ A 24-hour run sees about 30 times the tokens of a speedrun, and speedruns favor 
 
 **Open decision, after the backlog:** two 24-hour runs at 16×640 and 12×512, or one at 16×640.
 
-| Shape | Parameters | Estimated tokens in 24h | Tokens per parameter |
-|---|---:|---:|---:|
-| 12×512 | 48M | 3.8B | 79 |
-| 16×640 | 84M | 2.2B | 26 |
-| 16×704 | 101M | 1.8B | 18 |
+| Shape | Parameters | Measured tokens/s | Tokens in 24h | Tokens per parameter | Peak memory |
+|---|---:|---:|---:|---:|---:|
+| 12×512 | 48M | 56.8k | 4.9B | 102 | 6.6GB |
+| 16×640 | 84M | 30.4k | 2.6B | 31 | 8.4GB |
+| 16×704 | 101M | 23.0k | 2.0B | 20 | 9.2GB |
 
-Token counts are estimated from FLOPs and need checking, and memory for the larger shapes is untested. The Chinchilla rule of thumb suggests about 20 tokens per parameter.
+Speeds are with the current recipe (16a, 16b, 16c). The larger shapes come from 10-minute probes, which include
+recompiles at each phase change, so they're slight underestimates. The Chinchilla rule of thumb suggests about 20 tokens
+per parameter. 12×512 would need more than the 4.17B tokens on disk.
 
 Ready to use: checkpoint and resume, periodic val BPB, and 4.17B tokens in `data/tokenized-full` with the same val sets as the speedruns.
 

@@ -70,6 +70,9 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 15a | 13d + value residual | 1.1770 | 1.2065 | 1.1081 | 48.2M | 151M | 56.0k |
 | 15b | 13d, 120 minutes | 1.1202 | 1.1531 | 1.0435 | 48.2M | 410M | 56.9k |
 | 15c | 07a, 120 minutes | 1.1417 | 1.1722 | 1.0704 | 48.2M | 312M | 43.3k |
+| 16a | 15a (value residual), seed 1338 | 1.1759 | 1.2061 | 1.1053 | 48.2M | 153M | 56.8k |
+| 16b | 15a at 16×640, 10-minute probe | 1.4393 | 1.4544 | 1.4040 | 83.9M | 18M | 30.4k |
+| 16c | 15a at 16×704, 10-minute probe | 1.5106 | 1.5200 | 1.4886 | 101.0M | 14M | 23.0k |
 
 ## Notes
 
@@ -153,6 +156,9 @@ Full configs and metrics for every run are in `results.jsonl`.
   layer that starts at 0.5 (ResFormer). A second seed is running as a check.
 - **At 120 minutes:** the 13d recipe leads 07a's by 0.0215, against 0.0283 at 45 minutes (1.1882 vs a 1.2165 average),
   so about three quarters of the gain holds at 2.7 times the length. 13d processed 31% more tokens.
+- **16a:** value residual repeats on the second seed, 0.0123 better than 14a. The two seeds average 1.1765.
+- **16b/16c:** probes for the long run, measuring speed and memory only. Peak memory is 8.4GB at 16×640 and 9.2GB at
+  16×704, both inside 12GB. Their speeds include recompiles at each phase change, so they slightly understate a long run.
 
 ## Benchmarks
 
