@@ -247,6 +247,8 @@ def main():
         ema = ckpt["ema"]
         data.rng.bit_generator.state = ckpt["data_rng"]
         torch.set_rng_state(ckpt["torch_rng"].cpu())
+        if "cuda_rng" in ckpt:  # older checkpoints didn't save it
+            torch.cuda.set_rng_state(ckpt["cuda_rng"].cpu())
         print(f"Resumed from step {step}, {train_time / 60:.1f} min", flush=True)
     last_ckpt, last_eval = train_time, train_time
     torch.cuda.synchronize()
@@ -317,7 +319,8 @@ def main():
             # Written to a temporary file first, so a crash mid-save can't destroy the previous checkpoint
             torch.save({"model": model.state_dict(), "optimizers": [o.state_dict() for o, _ in optimizers],
                         "step": step, "tokens": tokens, "train_time": train_time, "loss_ema": loss_ema, "ema": ema,
-                        "data_rng": data.rng.bit_generator.state, "torch_rng": torch.get_rng_state()},
+                        "data_rng": data.rng.bit_generator.state, "torch_rng": torch.get_rng_state(),
+                        "cuda_rng": torch.cuda.get_rng_state()},
                        ckpt_path.with_suffix(".tmp"))
             ckpt_path.with_suffix(".tmp").replace(ckpt_path)
 
