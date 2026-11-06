@@ -256,6 +256,8 @@ def main():
             torch.cuda.set_rng_state(ckpt["cuda_rng"].cpu())
         print(f"Resumed from step {step}, {train_time / 60:.1f} min", flush=True)
     last_ckpt, last_eval = train_time, train_time
+    # Touched every 30 seconds while training, so a watchdog can tell a hung run from a slow one
+    heartbeat, last_beat = run_dir / "heartbeat", 0.0
     torch.cuda.synchronize()
     while train_time < budget_s:
         t0 = time.perf_counter()
@@ -311,6 +313,9 @@ def main():
         else:
             loss_val = None
         train_time += time.perf_counter() - t0
+        if time.time() - last_beat > 30:
+            heartbeat.touch()
+            last_beat = time.time()
         if loss_val is not None and step % (cfg.log_every * 10) == 0:
             print(f"step {step} | {train_time / 60:.1f}/{cfg.time_budget_min:.0f} min | "
                   f"loss {loss_ema:.4f} | {tokens / train_time:,.0f} tok/s", flush=True)
