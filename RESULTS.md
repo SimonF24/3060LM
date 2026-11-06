@@ -67,6 +67,9 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 14c | 12b, sampling throughout | 1.2556 | 1.2853 | 1.1861 | 48.2M | 162M | 59.8k |
 | 14d | 13d with 1 random token | 1.1874 | 1.2159 | 1.1210 | 48.2M | 159M | 59.0k |
 | 14e | 12b + Muon momentum 0.85 to 0.95 over 300 steps | 1.1901 | 1.2182 | 1.1244 | 48.2M | 148M | 54.9k |
+| 15a | 13d + value residual | 1.1770 | 1.2065 | 1.1081 | 48.2M | 151M | 56.0k |
+| 15b | 13d, 120 minutes | 1.1202 | 1.1531 | 1.0435 | 48.2M | 410M | 56.9k |
+| 15c | 07a, 120 minutes | 1.1417 | 1.1722 | 1.0704 | 48.2M | 312M | 43.3k |
 
 ## Notes
 
@@ -145,6 +148,11 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **14d:** sampling only each batch's targets plus one random token ties 2,048 (1.1874 vs 1.1882) at 4% more tokens per
   second. It's a simplification rather than a gain, so 2,048 stays for now.
 - **14e:** momentum warmup ties (0.0015 better). The ramp is from memory of the speedrun, not checked against its code.
+- **Value residual accepted:** 0.0112 better than 1.1882, better on both sources, past the 0.01 margin for a single
+  run. Every layer after the first blends the first layer's attention values into its own, with a learned weight per
+  layer that starts at 0.5 (ResFormer). A second seed is running as a check.
+- **At 120 minutes:** the 13d recipe leads 07a's by 0.0215, against 0.0283 at 45 minutes (1.1882 vs a 1.2165 average),
+  so about three quarters of the gain holds at 2.7 times the length. 13d processed 31% more tokens.
 
 ## Benchmarks
 

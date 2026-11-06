@@ -10,7 +10,7 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 Pretraining experiments are in progress. The final long run, chat fine-tuning and RL haven't been done yet.
 
-Best accepted score so far: **1.1882 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
+Best accepted score so far: **1.1770 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
 
 | Change | Weighted BPB |
 |---|---:|
@@ -25,6 +25,7 @@ Best accepted score so far: **1.1882 bits per byte, down from a baseline of 1.37
 | Effective batch schedule (average of 2 seeds) | 1.2086 |
 | Sampled softmax for the first 70% (average of 2 seeds) | 1.1919 |
 | Sampled softmax until 85% (average of 2 seeds) | 1.1882 |
+| Value residual (1 seed, past the 0.01 margin) | 1.1770 |
 
 See [RESULTS.md](RESULTS.md) for every run, including the ones that didn't help, and `results.jsonl` for full configs and metrics.
 
@@ -72,7 +73,7 @@ python prepare_data.py   # trains the tokenizer, tokenizes every shard on disk
 
 python train.py --name=my-run --compile=true --warmup_steps=200 --warmdown_frac=0.4 --beta2=0.95 \
     --batch_size=16 '--accum_schedule=[[0,2],[0.4,4],[0.7,8]]' --lr=1e-3 --muon_lr=1e-3 --qk_norm=true --activation=relu2 \
-    --sampled_k=2048 --sampled_until=0.85
+    --sampled_k=2048 --sampled_until=0.85 --value_residual=true
 ```
 
 Any field of `Config` in `train.py` can be set with `--field=value`. Results are appended to `results.jsonl`, and logs and the final model go to `training_runs/<name>/`.
