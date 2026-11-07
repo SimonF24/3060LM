@@ -11,6 +11,7 @@ In rough priority order. Each item gets a 45-minute run against the current best
 | Multi-token prediction | Extra training signal per token | NanoGPT speedrun #53 |
 | Profile the throughput gap | Effective batch 32 ran at 43.1k tok/s and 64 at 40.5k, for an unknown reason | Our runs |
 | Profile real GPU time per component | The compute shares here are FLOP estimates, not measurements | Our runs |
+| Quality curriculum | Order FineWeb-Edu by its edu score, or save the top scores for the warmdown. Needs re-tokenizing with scores; mix annealing alone tied (17a) | Curriculum and annealing literature |
 | NVIDIA ClimbMix dataset | Cut nanochat's time-to-GPT-2 from 2.76 to 2.02 hours, but needs its own comparison | nanochat |
 
 **Revisit on longer runs, since 45 minutes can't settle them:** model size and shape, untied embeddings, GQA, wider MLPs.
@@ -29,10 +30,11 @@ A 24-hour run sees about 30 times the tokens of a speedrun, and speedruns favor 
 |---|---:|---:|---:|---:|---:|
 | 12×512 | 48M | 56.8k | 4.9B | 102 | 6.6GB |
 | 16×640 | 84M | 30.4k | 2.6B | 31 | 8.4GB |
-| 16×704 | 101M | 23.0k | 2.0B | 20 | 9.2GB |
+| 16×704 | 101M | 26.0k | 2.2B | 22 | 9.2GB |
 
-Speeds are with the current recipe (16a, 16b, 16c). The larger shapes come from 10-minute probes, which include
-recompiles at each phase change, so they're slight underestimates. The Chinchilla rule of thumb suggests about 20 tokens
+Speeds are with the current recipe: 16a, the 16b probe, and 17b's 60-minute run. The 16×640 figure comes from a
+10-minute probe, which includes recompiles at each phase change, so it's a slight underestimate. LR 1e-3 is still best
+at 16×704 (17b-d). The Chinchilla rule of thumb suggests about 20 tokens
 per parameter. 12×512 would need more than the 4.17B tokens on disk.
 
 Ready to use: checkpoint and resume, periodic val BPB, and 4.17B tokens in `data/tokenized-full` with the same val sets as the speedruns.

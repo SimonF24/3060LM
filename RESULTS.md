@@ -73,6 +73,10 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 16a | 15a (value residual), seed 1338 | 1.1759 | 1.2061 | 1.1053 | 48.2M | 153M | 56.8k |
 | 16b | 15a at 16×640, 10-minute probe | 1.4393 | 1.4544 | 1.4040 | 83.9M | 18M | 30.4k |
 | 16c | 15a at 16×704, 10-minute probe | 1.5106 | 1.5200 | 1.4886 | 101.0M | 14M | 23.0k |
+| 17a | 15a + training mix 80/20, then 55/45 at 60% | 1.1757 | 1.2068 | 1.1031 | 48.2M | 156M | 57.7k |
+| 17b | 15a at 16×704, 60 minutes | 1.1861 | 1.2151 | 1.1184 | 101.0M | 94M | 26.0k |
+| 17c | 17b with LR 7e-4 | 1.1983 | 1.2269 | 1.1317 | 101.0M | 89M | 24.7k |
+| 17d | 17b with LR 1.4e-3 | 1.1904 | 1.2191 | 1.1236 | 101.0M | 89M | 24.6k |
 
 ## Notes
 
@@ -159,6 +163,12 @@ Full configs and metrics for every run are in `results.jsonl`.
 - **16a:** value residual repeats on the second seed, 0.0123 better than 14a. The two seeds average 1.1765.
 - **16b/16c:** probes for the long run, measuring speed and memory only. Peak memory is 8.4GB at 16×640 and 9.2GB at
   16×704, both inside 12GB. Their speeds include recompiles at each phase change, so they slightly understate a long run.
+- **17a:** mix annealing ties at 0.0013 better, and all of it comes from FineMath (1.1031 vs 1.1081) while FineWeb-Edu
+  is flat (1.2068 vs 1.2065). It shifts the model toward the source it sees more of at the end rather than improving it
+  overall, so it's rejected. A first attempt hung on the GPU for 2.5 hours and was rerun from scratch.
+- **17b-d:** at 16×704 the current LR of 1e-3 (AdamW and Muon) is best. 0.7× is 0.0122 worse and 1.4× is 0.0043
+  worse, so the LR carries over from 12×512. Speed varied from 24.6k to 26.0k tok/s between identical shapes, so part
+  of 1.4×'s gap is its 5% fewer tokens.
 
 ## Benchmarks
 
