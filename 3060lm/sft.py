@@ -6,6 +6,7 @@ pretraining (RoPE positions past 512 are new to the model, and SFT has to teach 
 before and after, then GSM8K test accuracy, and appends the result to sft_results.jsonl.
 
 Usage: python sft.py --name=sft-704 [--init=../training_runs/long-704/final.pt] [--any_config_field=value ...]
+       python sft.py --name=sft-704 --resume=true   # continues from training_runs/sft-704/latest.pt
 """
 from dataclasses import asdict, dataclass
 import json
@@ -45,6 +46,8 @@ class SFTConfig:
     log_every: int = 50
     eval_every: int = 1000  # steps between val loss evals
     gsm8k_limit: int = 0  # 0 scores the whole GSM8K test set
+    ckpt_every_min: float = 30.0  # saves training_runs/<name>/latest.pt this often
+    resume: bool = False  # continue from training_runs/<name>/latest.pt
     seed: int = 1337
 
 
@@ -94,13 +97,25 @@ def main():
     order = np.concatenate([rng.permutation(len(train_ids)) for _ in range(math.ceil(cfg.epochs))])
     print(f"{len(train_ids):,} train rows, {total_steps:,} steps of {rows_per_step} rows", flush=True)
 
-    initial_val = val_loss(model, val_ids, val_mask, cfg.batch_size)
-    print(f"step 0 | val loss {initial_val:.4f}", flush=True)
-    writer.add_scalar("val/loss", initial_val, 0)
+    ckpt_path = run_dir / "latest.pt"
+    start_step, prior_s = 0, 0.0
+    if cfg.resume:
+        # The row order comes from the seed, so the step count is enough to continue where the run stopped
+        state = torch.load(ckpt_path, map_location="cuda")
+        model.load_state_dict(state["model"])
+        for (optimizer, _), opt_state in zip(optimizers, state["optimizers"]):
+            optimizer.load_state_dict(opt_state)
+        start_step, prior_s, initial_val = state["step"], state["train_s"], state["initial_val"]
+        print(f"Resumed from step {start_step}, {prior_s / 60:.1f} min", flush=True)
+    else:
+        initial_val = val_loss(model, val_ids, val_mask, cfg.batch_size)
+        print(f"step 0 | val loss {initial_val:.4f}", flush=True)
+        writer.add_scalar("val/loss", initial_val, 0)
 
     heartbeat, last_beat = run_dir / "heartbeat", 0.0
-    t_start = time.perf_counter()
-    for step in range(total_steps):
+    t_start = time.perf_counter() - prior_s  # so elapsed time includes the time before a resume
+    last_ckpt = time.perf_counter()
+    for step in range(start_step, total_steps):
         lr_scale = min(1.0, (step + 1) / cfg.warmup_steps) * (1 - step / total_steps)
         for optimizer, base_lr in optimizers:
             for group in optimizer.param_groups:
@@ -130,11 +145,18 @@ def main():
             elapsed = time.perf_counter() - t_start
             writer.add_scalar("train/loss", step_loss.item(), step + 1)
             print(f"step {step + 1}/{total_steps} | loss {step_loss.item():.4f} | {elapsed / 60:.1f} min | "
-                  f"{(step + 1) * rows_per_step * seq_len / elapsed:,.0f} tok/s", flush=True)
+                  f"{(step + 1 - start_step) * rows_per_step * seq_len / (elapsed - prior_s):,.0f} tok/s", flush=True)
         if (step + 1) % cfg.eval_every == 0:
             v = val_loss(model, val_ids, val_mask, cfg.batch_size)
             writer.add_scalar("val/loss", v, step + 1)
             print(f"step {step + 1} | val loss {v:.4f}", flush=True)
+        if cfg.ckpt_every_min > 0 and time.perf_counter() - last_ckpt >= cfg.ckpt_every_min * 60:
+            # Written to a temporary file first, so a crash mid-save can't destroy the previous checkpoint
+            torch.save({"model": model.state_dict(), "optimizers": [o.state_dict() for o, _ in optimizers],
+                        "step": step + 1, "train_s": time.perf_counter() - t_start, "initial_val": initial_val},
+                       ckpt_path.with_suffix(".tmp"))
+            ckpt_path.with_suffix(".tmp").replace(ckpt_path)
+            last_ckpt = time.perf_counter()
     train_min = (time.perf_counter() - t_start) / 60
 
     final_val = val_loss(model, val_ids, val_mask, cfg.batch_size)
