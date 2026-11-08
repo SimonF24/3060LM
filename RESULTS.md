@@ -78,6 +78,21 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 17c | 17b with LR 7e-4 | 1.1983 | 1.2269 | 1.1317 | 101.0M | 89M | 24.7k |
 | 17d | 17b with LR 1.4e-3 | 1.1904 | 1.2191 | 1.1236 | 101.0M | 89M | 24.6k |
 
+## Long Run
+
+`long-704`: 16×704 with the 15a recipe at LR 1e-3 for **24 hours**, on the full token set (`data/tokenized-full`, same
+val text). It ran with no restarts, and the supervisor and watchdog never triggered.
+
+| Run | Weighted BPB | FineWeb-Edu | FineMath | Params | Tokens | tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| long-704 | **0.9838** | 1.0254 | 0.8868 | 101.0M | 2,154M | 24.9k |
+
+Val BPB during the run: 1.3259 at 1h, 1.2041 at 4h, 1.1538 at 9h, 1.0910 at 16h, 1.0571 at 20h, 0.9922 at 21h,
+0.9838 at the end. The checkpoints in the middle aren't finished models: the warmdown starts at 60%, and the drop of
+0.065 between 20h and 21h comes from switching to the full softmax at 85%. Before that switch the model's predictions
+are miscalibrated across the full vocabulary, so the mid-run scores understate it.
+
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without
@@ -174,15 +189,16 @@ Full configs and metrics for every run are in `results.jsonl`.
 
 Scored by total log-probability of each option with `3060lm/evaluate.py`, as accuracy ± standard error.
 
-| Benchmark | Chance | 00 baseline | 08a | 12b sampled softmax |
-|---|---:|---:|---:|---:|
-| HellaSwag (n=10,042) | 25.0% | 25.95 ± 0.44% | 26.37 ± 0.44% | 26.35 ± 0.44% |
-| PIQA (n=1,838) | 50.0% | 55.39 ± 1.16% | 56.96 ± 1.15% | 56.69 ± 1.16% |
-| ARC-Easy (n=2,376) | 25.0% | 34.26 ± 0.97% | 41.16 ± 1.01% | 42.21 ± 1.01% |
-| ARC-Challenge (n=1,172) | 25.0% | 16.81 ± 1.09% | 18.86 ± 1.14% | 17.75 ± 1.12% |
+| Benchmark | Chance | 00 baseline | 08a | 12b sampled softmax | long-704 (24h) |
+|---|---:|---:|---:|---:|---:|
+| HellaSwag (n=10,042) | 25.0% | 25.95 ± 0.44% | 26.37 ± 0.44% | 26.35 ± 0.44% | 28.62 ± 0.45% |
+| PIQA (n=1,838) | 50.0% | 55.39 ± 1.16% | 56.96 ± 1.15% | 56.69 ± 1.16% | 62.13 ± 1.13% |
+| ARC-Easy (n=2,376) | 25.0% | 34.26 ± 0.97% | 41.16 ± 1.01% | 42.21 ± 1.01% | 51.09 ± 1.03% |
+| ARC-Challenge (n=1,172) | 25.0% | 16.81 ± 1.09% | 18.86 ± 1.14% | 17.75 ± 1.12% | 21.25 ± 1.19% |
 
-Only the gain on ARC-Easy from baseline to 08a is clearly larger than its error, and 12b's lower BPB doesn't show up on
-any benchmark. Summed log-probability favors short options, and on
+Among the 45-minute runs, only the gain on ARC-Easy from baseline to 08a is clearly larger than its error, and 12b's lower
+BPB doesn't show up on any benchmark. The 24-hour run clears its error on HellaSwag, PIQA and ARC-Easy; ARC-Challenge is
+still below chance. Summed log-probability favors short options, and on
 ARC-Challenge always picking the shortest option scores 22.7% and the longest 27.8%, which partly explains the
 below-chance score. The models score below even the shortest-option rule, so length isn't the full explanation.
 The bias applies to both models, so compare them with each other rather than reading these as absolute ability.

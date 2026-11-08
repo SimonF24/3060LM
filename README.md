@@ -8,9 +8,10 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 ## Status
 
-Pretraining experiments are in progress. The final long run, chat fine-tuning and RL haven't been done yet.
+Pretraining is done. The 24-hour run (16×704, 101M parameters, 2.15B tokens) reached **0.9838 bits per byte**, with
+HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%. Chat fine-tuning and RL haven't been done yet.
 
-Best accepted score so far: **1.1765 bits per byte, down from a baseline of 1.3709** (lower is better), from 45-minute runs:
+The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1765** (lower is better):
 
 | Change | Weighted BPB |
 |---|---:|
@@ -98,8 +99,8 @@ Any field of `Config` in `train.py` can be set with `--field=value`. Results are
 
 ## Roadmap
 
-1. **Choose model size and shape:** test the top recipes on longer runs.
-2. **Final pretraining run:** up to 24 hours.
+1. ~~**Choose model size and shape**~~: 16×704, with LR checked at that size.
+2. ~~**Final pretraining run**~~: 24 hours, 0.9838 BPB.
 3. **Chat fine-tuning (SFT):** teach the chat format and tool use.
 4. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
 5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.

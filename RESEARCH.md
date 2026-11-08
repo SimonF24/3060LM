@@ -24,7 +24,8 @@ In rough priority order. Each item gets a 45-minute run against the current best
 
 A 24-hour run sees about 30 times the tokens of a speedrun, and speedruns favor whatever learns fastest early on.
 
-**Open decision, after the backlog:** two 24-hour runs at 16×640 and 12×512, or one at 16×640.
+**Done:** one 24-hour run at 16×704 reached 0.9838 BPB (see [RESULTS.md](RESULTS.md#long-run)). The table below is what
+the size decision was based on.
 
 | Shape | Parameters | Measured tokens/s | Tokens in 24h | Tokens per parameter | Peak memory |
 |---|---:|---:|---:|---:|---:|
