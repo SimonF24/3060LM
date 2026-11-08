@@ -87,9 +87,10 @@ class Config:
     seed: int = 1337
 
 
-def parse_args() -> Config:
-    cfg = Config()
-    types = {f.name: f.type for f in fields(Config)}
+def parse_args(cls=Config):
+    """Fills a config dataclass from --field=value arguments (JSON for dict, list and bool fields)."""
+    cfg = cls()
+    types = {f.name: f.type for f in fields(cls)}
     for arg in sys.argv[1:]:
         key, value = arg.removeprefix("--").split("=", 1)
         if key not in types:

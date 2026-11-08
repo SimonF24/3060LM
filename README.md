@@ -79,6 +79,15 @@ python train.py --name=my-run --compile=true --warmup_steps=200 --warmdown_frac=
 
 Any field of `Config` in `train.py` can be set with `--field=value`. Results are appended to `results.jsonl`, and logs and the final model go to `training_runs/<name>/`.
 
+Chat fine-tuning (SFT) uses smol-smoltalk plus GSM8K's training split, at 1024 context, with loss only on the assistant's replies:
+
+```bash
+python prepare_sft.py                        # tokenizes and packs data/sft/ (needs data/raw/smol-smoltalk and data/raw/gsm8k)
+python sft.py --name=sft-704                 # from training_runs/long-704/final.pt, results go to sft_results.jsonl
+python chat.py ../training_runs/sft-704/final.pt           # chat in the terminal
+python chat.py ../training_runs/sft-704/final.pt --gsm8k   # GSM8K test accuracy
+```
+
 ## Project Structure
 
 ```
