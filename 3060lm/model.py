@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tokenizer import VOCAB_SIZE
 
 # We use a standard decoder only Transformer++ architecture (as coined in https://arxiv.org/pdf/2312.00752,
 # described in section 4.2.1) i.e. use rotary embeddings, SwiGLU activations, RMSNorm instead of LayerNorm,
@@ -12,7 +11,7 @@ from tokenizer import VOCAB_SIZE
 
 @dataclass
 class TransformerConfig:
-    vocab_size: int = VOCAB_SIZE
+    vocab_size: int = 32_768  # matches tokenizer/stem32k.json
     model_dim: int = 512 # dimension of the token embeddings and the model's hidden states
     num_layers: int = 12 # number of transformer layers/blocks
     num_heads: int = 8 # number of attention heads in each multi-head attention mechanism

@@ -92,19 +92,18 @@ python chat.py ../training_runs/sft-704/final.pt --gsm8k   # GSM8K test accuracy
 
 ```
 3060lm/
-├── download_data.py  - Download dataset shards
-├── prepare_data.py   - Train the tokenizer and tokenize the data
+├── download_data.py  - Download pretraining dataset shards
+├── prepare_data.py   - Train the tokenizer and tokenize the pretraining data
 ├── model.py          - Model architecture, with experiment flags
-├── train.py          - Speedrun training harness and BPB evaluation
+├── train.py          - Pretraining harness and BPB evaluation
 ├── evaluate.py       - HellaSwag, PIQA and ARC benchmarks for a checkpoint
-│
-│   Original arXiv/PubMed pipeline, not used by the current experiments:
-├── eda.ipynb         - Exploratory data analysis
-├── preprocessing.py  - Clean the raw papers
-├── tokenizer.py      - Original tokenizer (model.py still imports its VOCAB_SIZE)
-├── dataset.py        - Original data loader
-└── pretrain.py       - Original training loop
+├── prepare_sft.py    - Tokenize and pack the chat fine-tuning data
+├── sft.py            - Chat fine-tuning
+└── chat.py           - Chat format, generation, terminal chat and the GSM8K eval
 ```
+
+The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data loader and training loop) is on the
+`main` branch and in git history.
 
 ## Roadmap
 
