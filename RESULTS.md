@@ -93,6 +93,23 @@ Val BPB during the run: 1.3259 at 1h, 1.2041 at 4h, 1.1538 at 9h, 1.0910 at 16h,
 are miscalibrated across the full vocabulary, so the mid-run scores understate it.
 
 
+## Chat Fine-Tuning (SFT)
+
+`sft-704` fine-tuned long-704 for one epoch on smol-smoltalk plus GSM8K train ×4: 281M tokens, of which 218M are
+assistant tokens, packed into 1024-token rows. It ran 4,513 steps of 64 rows at peak LR 3e-4 with linear decay, taking
+228.5 min at 21.6k tok/s and 9.4GB peak memory, with no restarts.
+
+| Step | 0 | 1000 | 2000 | 3000 | 4000 | 4513 |
+|---|---:|---:|---:|---:|---:|---:|
+| Masked val loss | 2.2177 | 1.6033 | 1.5316 | 1.4967 | 1.4797 | 1.4769 |
+
+- **GSM8K test (n=1,319, greedy, strict `#### N`):** 0.0%. No reply used the `####` format, even though about 30k
+  GSM8K answers (6% of conversations) were trained on. The model answers math in smol-smoltalk's "To find ..., we
+  need to ..." style instead. Taking the last number in the reply as the answer scores 4/300 (1.3%).
+- **Samples:** the replies follow the format and stop at the end token, and the code example is correct (a recursive
+  factorial). Arithmetic and facts are wrong: "17 * 23 = 23^2", "Pride and Prejudice ... attributed to Jean-Paul Sartre",
+  and the sky is blue because of the atmosphere's temperature. Longer replies repeat themselves.
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without

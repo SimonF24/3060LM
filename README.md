@@ -9,7 +9,11 @@ The original pipeline was written by hand. Since then, experiments have been run
 ## Status
 
 Pretraining is done. The 24-hour run (16×704, 101M parameters, 2.15B tokens) reached **0.9838 bits per byte**, with
-HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%. Chat fine-tuning and RL haven't been done yet.
+HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%.
+
+Chat fine-tuning (SFT, 3.8 hours) took masked val loss from 2.218 to 1.477. The model follows the chat format
+and writes fluent replies, but facts and arithmetic are often wrong, and GSM8K is 0% (1.3% when the last number is
+taken as the answer). RL hasn't been done yet.
 
 The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1765** (lower is better):
 
@@ -109,7 +113,7 @@ The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data
 
 1. ~~**Choose model size and shape**~~: 16×704, with LR checked at that size.
 2. ~~**Final pretraining run**~~: 24 hours, 0.9838 BPB.
-3. **Chat fine-tuning (SFT):** teach the chat format and tool use.
+3. ~~**Chat fine-tuning (SFT)**~~: chat format learned, GSM8K 0%. Tool use is still to do.
 4. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
 5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
 
