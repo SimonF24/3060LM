@@ -194,9 +194,14 @@ may be flattered, since SmolLM2 trained on FineWeb-Edu and FineMath and may have
   step, so the 360M teacher cuts the student to 31% of the direct run's tokens and the 1.7B teacher to 12%, and the
   teacher's signal doesn't make up for it. The 1.7B run also peaked at 12.9GB, past the card's 12GB, so it may have
   spilled into system memory and run slower than it otherwise would.
-- Distillation didn't help per token either, at least early on. At about 17M tokens (step 1000 of each, both at
-  full LR), the 360M-distilled student's cross-entropy was 4.61 against direct's 4.24. A direct run stopped at 40M
-  tokens would settle whether it catches up later.
+- Per token, the teacher helps a lot, though only later in the run. At about 17M tokens (step 1000 of each, both
+  at full LR) the 360M-distilled student's cross-entropy was still worse (4.61 vs 4.24), but by the end of its
+  schedule it's well ahead. 18d, 18b's configuration without the teacher with a 15.5-minute budget, reached 1.3444
+  (FineWeb-Edu 1.3563, FineMath 1.3167) on 31.8M tokens at 34.2k tok/s. Between 18d and 18a, direct training gains
+  about 0.077 BPB per doubling of tokens, which puts it at about 1.32 at 18b's 40.3M tokens, 0.065 behind 18b's
+  1.2529. Matching 1.2529 directly would take about 72M tokens, so a 360M-distilled token is worth about 1.8 direct
+  tokens, while the teacher cuts throughput 3.2x. Teacher outputs computed elsewhere, or reused across runs, would
+  win; computed on this GPU during training, they lose.
 - Our 32k tokenizer beats SmolLM2's 49k one at this budget (1.1759 vs 1.1883): the smaller vocab is faster
   (56.8k vs 47.8k tok/s) and puts fewer parameters in the embedding.
 
