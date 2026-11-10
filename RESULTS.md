@@ -146,6 +146,31 @@ uncached logits match to 3e-5 in fp32. In bf16 both are 0.35 from fp32, so greed
 (35 of 64 identical); rescored with the cache, sft-math gets GSM8K 1.90% and SVAMP 3.3%, within error of the scores
 above. The GSM8K eval went from 18 min to 93 s, and the pass@k run above, which took 89 min, would take about 8.
 
+## RL (`rl-math`)
+
+`rl-math` ran on-policy policy gradient with group baselines (`3060lm/rl.py`) from sft-math: 300 steps of 32 GSM8K
+training problems × 16 replies sampled at temperature 1 from the full distribution, with the calculator. Reward is 1
+for a correct `#### N` answer. AdamW at 2e-5, 151.6 min, 10.2GB peak, no restarts. GSM8K test and SVAMP are held out.
+
+| Model | GSM8K strict | GSM8K lenient | GSM8K `####` | SVAMP strict | SVAMP lenient | SVAMP `####` | Calls per reply |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| sft-math (cached rescore) | 1.90% | 2.35% | 63% | 3.3% | 4.3% | 85% | 4.2 / 3.2 |
+| rl-math | 3.94 ± 0.54% | 3.94% | 98% | 12.5 ± 1.05% | 12.5% | 99% | 1.7 / 1.8 |
+
+Periodic evals (first 400 problems of each, greedy):
+
+| Step | 0 | 50 | 100 | 150 | 200 | 250 | 300 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| GSM8K | 2.75% | 3.75% | 3.50% | 3.00% | 3.75% | 4.00% | 6.75% |
+| SVAMP | 3.75% | 14.00% | 11.50% | 11.75% | 10.75% | 10.75% | 11.75% |
+
+- SVAMP, which RL never saw, nearly quadruples, and GSM8K doubles. The lenient scores rise just as much, so it isn't only
+  the `####` format: replies that used to loop until the token limit now finish, at about 80-100 tokens instead of 170,
+  with fewer calculator calls.
+- Almost all of the gain arrives in the first 50 steps. After that the training reward stays flat at 1-4% and the
+  evals move within noise (the step-300 GSM8K 6.75% on 400 problems is 3.94% on all 1,319). RL fixed how the model
+  finishes answers, but with so few correct samples it found little signal to improve the reasoning itself.
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without

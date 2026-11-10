@@ -14,7 +14,8 @@ HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%.
 Chat fine-tuning (SFT, 3.8 hours) took masked val loss from 2.218 to 1.477. The model follows the chat format
 and writes fluent replies, but facts and arithmetic are often wrong, and GSM8K is 0% (1.3% when the last number is
 taken as the answer). A short math stage with calculator calls taught the `#### N` format and tool use, which gives
-GSM8K 1.8% and SVAMP 2.9%, but the model still mostly sets up the wrong calculations. RL hasn't been done yet.
+GSM8K 1.8% and SVAMP 2.9%, but the model still mostly sets up the wrong calculations. RL (2.5 hours) then raised GSM8K to 3.9% and
+held-out SVAMP to 12.5%, mostly by making replies finish instead of looping.
 
 The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1765** (lower is better):
 
@@ -97,6 +98,7 @@ python sft.py --name=sft-math --init=../training_runs/sft-704/final.pt --data_di
     --grad_accum=4 --lr=1e-4 --muon_lr=1e-4 --warmup_steps=30   # math stage: GSM8K with calculator calls
 python chat.py ../training_runs/sft-math/final.pt                   # chat in the terminal
 python chat.py ../training_runs/sft-math/final.pt --gsm8k --svamp   # math accuracy, with the calculator
+python rl.py --name=rl-math --problems=32   # RL on GSM8K train from sft-math, results go to rl_results.jsonl
 ```
 
 ## Project Structure
@@ -110,7 +112,8 @@ python chat.py ../training_runs/sft-math/final.pt --gsm8k --svamp   # math accur
 ├── evaluate.py       - HellaSwag, PIQA and ARC benchmarks for a checkpoint
 ├── prepare_sft.py    - Tokenize and pack the chat fine-tuning data
 ├── sft.py            - Chat fine-tuning
-└── chat.py           - Chat format, generation, terminal chat and the GSM8K eval
+├── chat.py           - Chat format, calculator, cached generation, terminal chat and math evals
+└── rl.py             - RL with verifiable rewards on GSM8K
 ```
 
 The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data loader and training loop) is on the
@@ -121,7 +124,7 @@ The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data
 1. ~~**Choose model size and shape**~~: 16×704, with LR checked at that size.
 2. ~~**Final pretraining run**~~: 24 hours, 0.9838 BPB.
 3. ~~**Chat fine-tuning (SFT)**~~: chat format and calculator calls learned; GSM8K 1.8%, SVAMP 2.9%.
-4. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
+4. ~~**RL with verifiable rewards**~~: GSM8K 3.9%, SVAMP 12.5%, with the gain in the first 50 steps.
 5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
 
 ## System Specs

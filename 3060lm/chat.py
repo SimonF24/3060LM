@@ -145,12 +145,15 @@ def decode_graphs(model, batch_size: int) -> tuple:
 
 @torch.no_grad()
 def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: float = 0.0,
-             top_k: int = 50, batch_size: int = 64, tokenizer=None, cache: bool = True) -> list[list[int]]:
+             top_k: int = 50, batch_size: int = 64, tokenizer=None, cache: bool = True,
+             details: bool = False) -> list:
     """
     Generates a reply of up to max_new_tokens sampled tokens for each prompt, stopping at <|im_end|>. With a
     tokenizer, calculator calls are answered: when a reply ends with "<<expression=", the result and ">>" are
     appended, one token per step. With the cache, prompts are prefilled and each step runs only the newest token,
     as a CUDA graph; cache=False reruns the whole sequence every step instead, which is slow but simple, for checks.
+    top_k=0 samples from the full distribution. With details, each reply is a dict with its tokens, which of them
+    the model sampled (rather than the calculator), and whether it ended with <|im_end|> (which isn't in tokens).
     """
     max_len = model.config.max_seq_len
     batch_size = min(batch_size, len(prompts))
@@ -165,6 +168,8 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
         replies = [[] for _ in range(n)]
         forced = [[] for _ in range(n)]  # calculator output still to be fed in
         sampled = [0] * n
+        chosen = [[] for _ in range(n)]  # per reply token: 1 if sampled, 0 if calculator output
+        ended = [False] * n
         active = [j < len(chunk) for j in range(n)]
         if cache:  # prefill the prompts, right-padded
             lengths = torch.tensor([len(s) for s in seqs], device="cuda")
@@ -185,7 +190,9 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
                     logits = model(x.cuda())
                 last = torch.tensor([len(seqs[j]) - 1 if active[j] else 0 for j in range(n)], device="cuda")
                 logits = logits[torch.arange(n, device="cuda"), last].float()
-            if temperature > 0:
+            if temperature > 0 and not top_k:
+                next_ids = torch.multinomial((logits / temperature).softmax(-1), 1).squeeze(1).tolist()
+            elif temperature > 0:
                 values, indices = logits.topk(top_k, dim=-1)
                 picks = torch.multinomial((values / temperature).softmax(-1), 1)
                 next_ids = indices.gather(1, picks).squeeze(1).tolist()
@@ -200,9 +207,11 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
                 sampled[j] += not was_forced
                 if token == END or len(seqs[j]) + 1 >= max_len:
                     active[j] = False
+                    ended[j] = token == END
                     continue
                 seqs[j].append(token)
                 replies[j].append(token)
+                chosen[j].append(int(not was_forced))
                 if tokenizer is not None and not was_forced:
                     call = CALL.search(tokenizer.decode(replies[j][-48:]))
                     result = calculate(call.group(1)) if call else None
@@ -220,7 +229,7 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
                 graph.replay()
                 logits = graph_logits[:, -1].float()
         for j, i in enumerate(chunk):
-            outputs[i] = replies[j]
+            outputs[i] = {"tokens": replies[j], "sampled": chosen[j], "ended": ended[j]} if details else replies[j]
     return outputs
 
 
