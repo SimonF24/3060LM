@@ -13,7 +13,8 @@ HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%.
 
 Chat fine-tuning (SFT, 3.8 hours) took masked val loss from 2.218 to 1.477. The model follows the chat format
 and writes fluent replies, but facts and arithmetic are often wrong, and GSM8K is 0% (1.3% when the last number is
-taken as the answer). RL hasn't been done yet.
+taken as the answer). A short math stage with calculator calls taught the `#### N` format and tool use, which gives
+GSM8K 1.8% and SVAMP 2.9%, but the model still mostly sets up the wrong calculations. RL hasn't been done yet.
 
 The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1765** (lower is better):
 
@@ -83,13 +84,19 @@ python train.py --name=my-run --compile=true --warmup_steps=200 --warmdown_frac=
 
 Any field of `Config` in `train.py` can be set with `--field=value`. Results are appended to `results.jsonl`, and logs and the final model go to `training_runs/<name>/`.
 
-Chat fine-tuning (SFT) uses smol-smoltalk plus GSM8K's training split, at 1024 context, with loss only on the assistant's replies:
+Chat fine-tuning (SFT) uses smol-smoltalk plus GSM8K's training split, at 1024 context, with loss only on the assistant's replies.
+A second, short stage trains on GSM8K with its `<<48/2=24>>` annotations as calculator calls: the model writes `<<48/2=`,
+generation appends `24>>`, and that inserted part isn't trained on. SVAMP (all 1,000 problems, never trained on)
+checks math beyond GSM8K's style:
 
 ```bash
 python prepare_sft.py                        # tokenizes and packs data/sft/ (needs data/raw/smol-smoltalk and data/raw/gsm8k)
 python sft.py --name=sft-704                 # from training_runs/long-704/final.pt, results go to sft_results.jsonl
-python chat.py ../training_runs/sft-704/final.pt           # chat in the terminal
-python chat.py ../training_runs/sft-704/final.pt --gsm8k   # GSM8K test accuracy
+python prepare_sft.py --out=sft-math --calculator=1 --gsm8k_repeats=3 --smoltalk_groups=10   # math stage data
+python sft.py --name=sft-math --init=../training_runs/sft-704/final.pt --data_dir=../data/sft-math \
+    --grad_accum=4 --lr=1e-4 --muon_lr=1e-4 --warmup_steps=30   # math stage: GSM8K with calculator calls
+python chat.py ../training_runs/sft-math/final.pt                   # chat in the terminal
+python chat.py ../training_runs/sft-math/final.pt --gsm8k --svamp   # math accuracy, with the calculator
 ```
 
 ## Project Structure
@@ -113,7 +120,7 @@ The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data
 
 1. ~~**Choose model size and shape**~~: 16×704, with LR checked at that size.
 2. ~~**Final pretraining run**~~: 24 hours, 0.9838 BPB.
-3. ~~**Chat fine-tuning (SFT)**~~: chat format learned, GSM8K 0%. Tool use is still to do.
+3. ~~**Chat fine-tuning (SFT)**~~: chat format and calculator calls learned; GSM8K 1.8%, SVAMP 2.9%.
 4. **RL with verifiable rewards:** start with math, such as GSM8K with a calculator or restricted Python.
 5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
 

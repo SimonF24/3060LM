@@ -2,10 +2,12 @@
 Builds the SFT data: smol-smoltalk conversations plus GSM8K's training split, in the chat format from chat.py,
 packed into rows of SEQ_LEN + 1 tokens (inputs plus shifted targets) with a loss mask for assistant replies.
 
-Writes data/sft/{train,val}_{ids,mask}.npy. The val set is the first VAL_CONVERSATIONS of smol-smoltalk's test split.
+Writes data/<out>/{train,val}_{ids,mask}.npy. The val set is the first VAL_CONVERSATIONS of smol-smoltalk's test split.
 GSM8K's test split is never trained on; chat.py --gsm8k scores it.
 
 Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
+       python prepare_sft.py --out=sft-math --calculator=1 --gsm8k_repeats=3 --smoltalk_groups=10
+           # the math stage: GSM8K with calculator calls, plus 10,000 smol-smoltalk conversations as replay
 """
 import bisect
 import json
@@ -21,10 +23,12 @@ from chat import PAD, TOKENIZER_PATH, encode_conversation, gsm8k_answer
 
 ROOT = Path(__file__).parent.parent
 RAW = ROOT / "data/raw"
-OUT = ROOT / "data/sft"
 ARGS = dict(a.removeprefix("--").split("=", 1) for a in sys.argv[1:])
+OUT = ROOT / "data" / ARGS.get("out", "sft")
 SEQ_LEN = int(ARGS.get("seq_len", 1024))
 GSM8K_REPEATS = int(ARGS.get("gsm8k_repeats", 4))  # GSM8K is small, so it's repeated to be a visible share of the mix
+CALCULATOR = ARGS.get("calculator", "0") == "1"  # keep GSM8K's <<48/2=24>> annotations as calculator calls
+SMOLTALK_GROUPS = int(ARGS.get("smoltalk_groups", 0))  # 1,000-row groups of smol-smoltalk to use; 0 uses all
 VAL_CONVERSATIONS = 2_000
 
 def load_conversations(source: str, part: int) -> list[list[dict]]:
@@ -35,7 +39,7 @@ def load_conversations(source: str, part: int) -> list[list[dict]]:
     if source == "gsm8k":
         rows = pq.read_table(RAW / "gsm8k/main/train-00000-of-00001.parquet").to_pylist()
         return [[{"role": "user", "content": r["question"]},
-                 {"role": "assistant", "content": gsm8k_answer(r["answer"])}] for r in rows]
+                 {"role": "assistant", "content": gsm8k_answer(r["answer"], CALCULATOR)}] for r in rows]
     table = pq.ParquetFile(RAW / "smol-smoltalk/data" / source).read_row_group(part, columns=["messages"])
     return [r["messages"] for r in table.to_pylist()]
 
@@ -102,11 +106,14 @@ def main():
     train_jobs = []
     for f in sorted((RAW / "smol-smoltalk/data").glob("train-*.parquet")):
         train_jobs += [(f.name, g) for g in range(pq.ParquetFile(f).num_row_groups)]
+    if SMOLTALK_GROUPS:
+        train_jobs = train_jobs[:SMOLTALK_GROUPS]
     train_jobs += [("gsm8k", 0)] * GSM8K_REPEATS
     val_jobs = [("test-00000-of-00001.parquet", g) for g in range(VAL_CONVERSATIONS // 1000)]
     print(f"{len(train_jobs)} train jobs, GSM8K x {GSM8K_REPEATS}, val {VAL_CONVERSATIONS:,}", flush=True)
 
-    meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS}
+    meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS, "calculator": CALCULATOR,
+            "smoltalk_groups": SMOLTALK_GROUPS}
     for split, jobs in [("train", train_jobs), ("val", val_jobs)]:
         ids, mask, stats = pack(encode_all(jobs), seed=0)
         np.save(OUT / f"{split}_ids.npy", ids)

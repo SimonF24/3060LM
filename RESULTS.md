@@ -110,6 +110,25 @@ assistant tokens, packed into 1024-token rows. It ran 4,513 steps of 64 rows at 
   factorial). Arithmetic and facts are wrong: "17 * 23 = 23^2", "Pride and Prejudice ... attributed to Jean-Paul Sartre",
   and the sky is blue because of the atmosphere's temperature. Longer replies repeat themselves.
 
+### Math stage with a calculator (`sft-math`)
+
+`sft-math` continued from sft-704 for one epoch on GSM8K train ×3 with its `<<48/2=24>>` annotations kept as calculator
+calls (the inserted result isn't trained on), plus 10,000 smol-smoltalk conversations as replay. That's 10.3M tokens in
+316 steps of 32 rows at peak LR 1e-4, taking 10 min. Both benchmarks are scored greedily with the calculator available.
+SVAMP (all 1,000 problems) is never trained on. "Lenient" takes the last number in the reply.
+
+| Model | Chat val loss | GSM8K strict | GSM8K lenient | GSM8K `####` | SVAMP strict | SVAMP lenient | SVAMP `####` | Calls per reply |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| sft-704 | 1.4769 | 0.0% | 2.05% | 0% | 0.0% | 3.4% | 0% | 0 |
+| sft-math | 1.4833 | 1.82 ± 0.37% | 2.27% | 64% | 2.9 ± 0.53% | 3.9% | 85% | 4.2 / 3.3 |
+
+- The stage taught the format and the tool: about two-thirds of GSM8K replies and 85% of SVAMP replies end in `#### N`,
+  with three to four calculator calls each, and chat val loss barely moves (+0.006).
+- Accuracy hardly improves. Lenient scores rise only 0.2 to 0.5 points, within error, so arithmetic wasn't the
+  bottleneck: the model sets up the wrong calculations (16*3 for "eats three of 16 eggs", doubling instead of halving).
+  Replies without `####` mostly loop until the 320-token limit.
+- The strict scores are no longer zero, so RL has some reward signal to start from, but not much.
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without

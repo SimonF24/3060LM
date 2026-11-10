@@ -3,10 +3,12 @@ Supervised fine-tuning (SFT): teaches a pretrained checkpoint the chat format fr
 
 Trains on the packed rows from prepare_sft.py with loss only on assistant replies, at a longer context than
 pretraining (RoPE positions past 512 are new to the model, and SFT has to teach them). Reports masked val loss
-before and after, then GSM8K test accuracy, and appends the result to sft_results.jsonl.
+before and after, then GSM8K and SVAMP accuracy, and appends the result to sft_results.jsonl.
 
 Usage: python sft.py --name=sft-704 [--init=../training_runs/long-704/final.pt] [--any_config_field=value ...]
        python sft.py --name=sft-704 --resume=true   # continues from training_runs/sft-704/latest.pt
+       python sft.py --name=sft-math --init=../training_runs/sft-704/final.pt --data_dir=../data/sft-math \
+           --grad_accum=4 --epochs=1 --lr=1e-4 --muon_lr=1e-4 --warmup_steps=30   # the math stage
 """
 from dataclasses import asdict, dataclass
 import json
@@ -20,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-from chat import TOKENIZER_PATH, evaluate_gsm8k
+from chat import TOKENIZER_PATH, evaluate_math
 from model import Transformer, TransformerConfig
 from train import build_optimizers, parse_args
 
@@ -45,7 +47,8 @@ class SFTConfig:
     compile: bool = True
     log_every: int = 50
     eval_every: int = 1000  # steps between val loss evals
-    gsm8k_limit: int = 0  # 0 scores the whole GSM8K test set
+    benchmarks: str = "gsm8k,svamp"  # scored at the end, with the calculator available
+    benchmark_limit: int = 0  # problems per benchmark; 0 scores them all
     ckpt_every_min: float = 30.0  # saves training_runs/<name>/latest.pt this often
     resume: bool = False  # continue from training_runs/<name>/latest.pt
     seed: int = 1337
@@ -165,12 +168,15 @@ def main():
                run_dir / "final.pt")
     model.eval()
     t0 = time.perf_counter()
-    gsm8k = evaluate_gsm8k(model, Tokenizer.from_file(str(TOKENIZER_PATH)), limit=cfg.gsm8k_limit)
-    print(json.dumps(gsm8k, indent=2), flush=True)
     result = {"name": cfg.name, "init": cfg.init, "val_loss_before": round(initial_val, 4),
-              "val_loss": round(final_val, 4), "gsm8k": {k: v for k, v in gsm8k.items() if k != "examples"},
-              "steps": total_steps, "train_min": round(train_min, 1), "gsm8k_eval_s": round(time.perf_counter() - t0),
-              "peak_mem_GB": round(torch.cuda.max_memory_allocated() / 1e9, 2), "config": asdict(cfg)}
+              "val_loss": round(final_val, 4)}
+    tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
+    for benchmark in filter(None, cfg.benchmarks.split(",")):
+        scores = evaluate_math(model, tokenizer, benchmark, limit=cfg.benchmark_limit)
+        print(benchmark, json.dumps(scores, indent=2), flush=True)
+        result[benchmark] = {k: v for k, v in scores.items() if k != "examples"}
+    result.update({"steps": total_steps, "train_min": round(train_min, 1), "eval_s": round(time.perf_counter() - t0),
+                   "peak_mem_GB": round(torch.cuda.max_memory_allocated() / 1e9, 2), "config": asdict(cfg)})
     with open(ROOT / "sft_results.jsonl", "a") as f:
         f.write(json.dumps(result) + "\n")
 
