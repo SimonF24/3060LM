@@ -17,6 +17,9 @@ taken as the answer). A short math stage with calculator calls taught the `#### 
 GSM8K 1.8% and SVAMP 2.9%, but the model still mostly sets up the wrong calculations. RL (2.5 hours) then raised GSM8K to 3.9% and
 held-out SVAMP to 12.5%, mostly by making replies finish instead of looping.
 
+Distilling from SmolLM2-360M or -1.7B loses to direct training at the same 45-minute budget (1.2529 and 1.4247
+vs 1.1883 BPB), because the teacher's forward passes leave the student with 31% and 12% of the tokens.
+
 The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1765** (lower is better):
 
 | Change | Weighted BPB |
@@ -99,6 +102,15 @@ python sft.py --name=sft-math --init=../training_runs/sft-704/final.pt --data_di
 python chat.py ../training_runs/sft-math/final.pt                   # chat in the terminal
 python chat.py ../training_runs/sft-math/final.pt --gsm8k --svamp   # math accuracy, with the calculator
 python rl.py --name=rl-math --problems=32   # RL on GSM8K train from sft-math, results go to rl_results.jsonl
+```
+
+Distillation from a Hugging Face teacher (its forward passes count against the time budget). The data has to use the
+teacher's tokenizer:
+
+```bash
+python prepare_data.py --speedrun-shards --tokenizer=data/teachers/SmolLM2-360M/tokenizer.json --out=data/tokenized-smollm2
+python train.py --name=distill-360m <recipe flags without sampled_k> --data_dir=../data/tokenized-smollm2 --vocab_size=49152 \
+    --teacher=data/teachers/SmolLM2-360M --distill_alpha=0.5 --batch_size=8 '--accum_schedule=[[0,4],[0.4,8],[0.7,16]]'
 ```
 
 ## Project Structure

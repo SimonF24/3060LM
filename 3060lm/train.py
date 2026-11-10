@@ -80,6 +80,10 @@ class Config:
     sampled_k: int = 0  # if > 0, score each batch's targets plus this many random tokens instead of the full vocab
     sampled_until: float = 0.7  # fraction of the budget after which training uses the full softmax again
     untie_at: float = 0.0  # if > 0, give the output head its own copy of the embedding at this fraction of the budget
+    # distillation: a Hugging Face causal LM with the same tokenizer as the data; its forward passes count against the budget
+    teacher: str = ""  # path under the repo root, e.g. data/teachers/SmolLM2-360M; empty trains without a teacher
+    distill_alpha: float = 0.5  # loss = alpha * KL(teacher || student) + (1 - alpha) * cross-entropy on the next token
+    distill_temp: float = 1.0  # softmax temperature for both distributions in the KL term
     log_every: int = 50
     eval_every_min: float = 0.0  # if > 0, also report val BPB during training
     ckpt_every_min: float = 0.0  # if > 0, save a resumable checkpoint to training_runs/<name>/latest.pt
@@ -171,6 +175,16 @@ def evaluate_bpb(model, cfg: Config) -> dict:
     return results
 
 
+def distill_loss(logits: torch.Tensor, teacher_logits: torch.Tensor, targets: torch.Tensor, alpha: float,
+                 temp: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Returns the mixed distillation loss and the plain cross-entropy (for logging)."""
+    logits, teacher_logits = logits.float().flatten(0, 1), teacher_logits.float().flatten(0, 1)
+    ce = F.cross_entropy(logits, targets.flatten())
+    kl = F.kl_div(F.log_softmax(logits / temp, -1), F.log_softmax(teacher_logits / temp, -1), log_target=True,
+                  reduction="batchmean") * temp ** 2
+    return alpha * kl + (1 - alpha) * ce, ce
+
+
 def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, float]]:
     """Returns (optimizer, base LR) pairs. Embeddings, the output projection and the 1D RMSNorm scales always use AdamW."""
     adamw_params, muon_params = [], []
@@ -236,6 +250,18 @@ def main():
     train_model = torch.compile(model) if cfg.compile else model
     data = MixedSource(cfg.data_dir, cfg.mix, cfg.seed, cfg.align_starts)
     ema = None
+    teacher = None
+    if cfg.teacher:
+        if cfg.sampled_k > 0:
+            raise ValueError("Distillation needs the student's full softmax, so it can't use sampled_k")
+        from transformers import AutoModelForCausalLM
+        teacher = AutoModelForCausalLM.from_pretrained(ROOT / cfg.teacher, dtype=torch.bfloat16).cuda().eval()
+        teacher.requires_grad_(False)
+        if teacher.config.vocab_size > cfg.vocab_size:
+            raise ValueError(f"The teacher's vocab ({teacher.config.vocab_size}) is larger than vocab_size")
+        print(f"teacher {cfg.teacher}: {sum(p.numel() for p in teacher.parameters()) / 1e6:.0f}M parameters")
+        teacher_forward = torch.compile(teacher) if cfg.compile else teacher
+        loss_fn = torch.compile(distill_loss) if cfg.compile else distill_loss
 
     budget_s = cfg.time_budget_min * 60
     step, tokens, train_time = 0, 0, 0.0
@@ -285,7 +311,12 @@ def main():
                     targets = torch.searchsorted(candidates, targets)
                 else:
                     logits = train_model(inputs)
-                loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
+                if teacher is not None:
+                    with torch.no_grad():
+                        teacher_logits = teacher_forward(inputs).logits[..., :cfg.vocab_size]
+                    loss, ce = loss_fn(logits, teacher_logits, targets, cfg.distill_alpha, cfg.distill_temp)
+                else:
+                    loss = ce = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
             (loss / grad_accum).backward()
             tokens += inputs.numel()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -307,7 +338,7 @@ def main():
                     for k, p in model.named_parameters():
                         ema[k].lerp_(p, 1 - cfg.ema_decay)
         if step % cfg.log_every == 0:
-            loss_val = loss.item()  # syncs, so timing below is accurate
+            loss_val = ce.item()  # the cross-entropy part, comparable with and without a teacher; syncs for timing
             loss_ema = loss_val if loss_ema is None else 0.9 * loss_ema + 0.1 * loss_val
             writer.add_scalar("train/loss", loss_val, tokens)
             writer.add_scalar("train/grad_norm", grad_norm.item(), tokens)

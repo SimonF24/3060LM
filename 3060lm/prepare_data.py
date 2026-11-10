@@ -3,6 +3,7 @@ Builds the pretraining data for the general STEM-leaning mix.
 
 1. Trains a 32k byte-level BPE tokenizer on a sample of each source
    (GPT-4 style pre-tokenization, but digits are split one per token, which helps arithmetic)
+   (skipped with --tokenizer=<path>, which uses an existing tokenizer, such as a distillation teacher's)
 2. Tokenizes every source into data/tokenized/<source>/{train,val}.bin (uint16)
    The first VAL_DOCS documents of each source are held out as a fixed val set, and the
    number of UTF-8 bytes in the val text is saved so we can report bits-per-byte (BPB),
@@ -25,6 +26,8 @@ OUT = ROOT / next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--o
 # Pass --vocab=<size> to train a differently sized tokenizer
 VOCAB_SIZE = int(next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--vocab=")), 32_768))
 TOKENIZER_PATH = ROOT / f"tokenizer/stem{VOCAB_SIZE // 1024}k.json"
+# Pass --tokenizer=<path under the repo root> to tokenize with an existing tokenizer, such as a distillation teacher's
+TOKENIZER_PATH = ROOT / next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--tokenizer=")), TOKENIZER_PATH)
 
 SOURCES = {
     "fineweb-edu": sorted((RAW / "fineweb-edu/sample/10BT").glob("*.parquet")),

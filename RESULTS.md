@@ -171,6 +171,35 @@ Periodic evals (first 400 problems of each, greedy):
   evals move within noise (the step-300 GSM8K 6.75% on 400 problems is 3.94% on all 1,319). RL fixed how the model
   finishes answers, but with so few correct samples it found little signal to improve the reasoning itself.
 
+## Distillation (chain 18)
+
+Does distilling from a stronger model beat training directly, when the teacher's forward passes count against the
+same 45-minute budget? The teachers are SmolLM2-360M and SmolLM2-1.7B. The student is the current speedrun recipe
+(12×512) with SmolLM2's 49k tokenizer, which matching the teacher's distribution requires, so it has 56.6M parameters
+instead of 48.2M. Distilled runs use loss = 0.5 × KL(teacher ‖ student) + 0.5 × cross-entropy at temperature 1, with
+the full softmax (sampled softmax can't produce the student's full distribution) and micro-batch 8 (16 used 13.7GB
+with the 1.7B teacher).
+
+| Run | Teacher | Weighted BPB | FineWeb-Edu | FineMath | Tokens | tok/s | Peak memory |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 16a value residual (our tokenizer) | none | 1.1759 | 1.2061 | 1.1053 | 153M | 56.8k | 6.6GB |
+| 18a direct | none | **1.1883** | 1.2082 | 1.1418 | 129M | 47.8k | 9.5GB |
+| 18b distilled | SmolLM2-360M | 1.2529 | 1.2645 | 1.2257 | 40M | 14.9k | 10.2GB |
+| 18c distilled | SmolLM2-1.7B | 1.4247 | 1.4278 | 1.4172 | 16M | 5.7k | 12.9GB |
+
+Teacher BPB on the same val text (first 150k tokens of each source): SmolLM2-360M 0.8145, SmolLM2-1.7B 0.6743. These
+may be flattered, since SmolLM2 trained on FineWeb-Edu and FineMath and may have seen these documents.
+
+- Within the budget, direct training wins clearly. Each teacher forward pass costs more than the student's training
+  step, so the 360M teacher cuts the student to 31% of the direct run's tokens and the 1.7B teacher to 12%, and the
+  teacher's signal doesn't make up for it. The 1.7B run also peaked at 12.9GB, past the card's 12GB, so it may have
+  spilled into system memory and run slower than it otherwise would.
+- Distillation didn't help per token either, at least early on. At about 17M tokens (step 1000 of each, both at
+  full LR), the 360M-distilled student's cross-entropy was 4.61 against direct's 4.24. A direct run stopped at 40M
+  tokens would settle whether it catches up later.
+- Our 32k tokenizer beats SmolLM2's 49k one at this budget (1.1759 vs 1.1883): the smaller vocab is faster
+  (56.8k vs 47.8k tok/s) and puts fewer parameters in the embedding.
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without
