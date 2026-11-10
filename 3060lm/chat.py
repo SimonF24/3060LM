@@ -11,6 +11,7 @@ result and ">>" ("24>>"), which training excludes from the loss since the model 
 Usage:
     python chat.py ../training_runs/<name>/final.pt            # chat in the terminal
     python chat.py ../training_runs/<name>/final.pt --gsm8k --svamp   # math accuracy, appended to benchmarks.jsonl
+    python chat.py ../training_runs/<name>/final.pt --gsm8k --svamp --pass_k=16 --limit=200   # pass@k from sampling
 """
 import ast
 import json
@@ -24,6 +25,8 @@ import time
 import pyarrow.parquet as pq
 from tokenizers import Tokenizer
 import torch
+
+from model import KVCache
 
 ROOT = Path(__file__).parent.parent
 TOKENIZER_PATH = ROOT / "tokenizer/stem32k.json"
@@ -108,55 +111,114 @@ def gsm8k_answer(solution: str, calculator: bool = False) -> str:
     return solution if calculator else re.sub(r"<<[^>]*>>", "", solution)
 
 
+BUCKET = 128  # decode graphs attend to a multiple of this many cache entries
+
+
+def decode_graphs(model, batch_size: int) -> tuple:
+    """
+    CUDA graphs of one decode step, one per attention length (a multiple of BUCKET), sharing one KV cache. A step
+    launches hundreds of small kernels, which Python issues more slowly than the GPU runs them; a graph replays them
+    with one launch. Built once per model and batch size, and stored on the model.
+    """
+    graphs = model.__dict__.setdefault("_decode_graphs", {})
+    if batch_size not in graphs:
+        max_len = model.config.max_seq_len
+        kv = model.make_cache(batch_size)
+        tokens = torch.full((batch_size, 1), PAD, dtype=torch.long, device="cuda")
+        positions = torch.zeros((batch_size, 1), dtype=torch.long, device="cuda")
+        steps, pool = {}, None
+        for used in sorted({min(u, max_len) for u in range(BUCKET, max_len + BUCKET, BUCKET)}):
+            stream = torch.cuda.Stream()  # warm up off the default stream, as capture requires
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream), torch.autocast("cuda", dtype=torch.bfloat16):
+                for _ in range(2):
+                    model(tokens, cache=kv, positions=positions, used=used)
+            torch.cuda.current_stream().wait_stream(stream)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, pool=pool), torch.autocast("cuda", dtype=torch.bfloat16):
+                logits = model(tokens, cache=kv, positions=positions, used=used)
+            pool = graph.pool()
+            steps[used] = (graph, logits)
+        graphs[batch_size] = (kv, tokens, positions, steps)
+    return graphs[batch_size]
+
+
 @torch.no_grad()
 def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: float = 0.0,
-             top_k: int = 50, batch_size: int = 32, tokenizer=None) -> list[list[int]]:
+             top_k: int = 50, batch_size: int = 64, tokenizer=None, cache: bool = True) -> list[list[int]]:
     """
-    Generates a reply for each prompt, stopping at <|im_end|>. There's no KV cache, so every step reruns the
-    whole sequence; rows are right-padded, which causal attention makes harmless. With a tokenizer, calculator
-    calls are answered: when a reply ends with "<<expression=", the result and ">>" are appended.
+    Generates a reply of up to max_new_tokens sampled tokens for each prompt, stopping at <|im_end|>. With a
+    tokenizer, calculator calls are answered: when a reply ends with "<<expression=", the result and ">>" are
+    appended, one token per step. With the cache, prompts are prefilled and each step runs only the newest token,
+    as a CUDA graph; cache=False reruns the whole sequence every step instead, which is slow but simple, for checks.
     """
     max_len = model.config.max_seq_len
+    batch_size = min(batch_size, len(prompts))
+    if cache:
+        kv, token_buffer, position_buffer, steps = decode_graphs(model, batch_size)
     order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
     outputs = [None] * len(prompts)
     for b in range(0, len(order), batch_size):
         chunk = order[b:b + batch_size]
-        seqs = [list(prompts[i][-(max_len - 1):]) for i in chunk]
-        replies = [[] for _ in chunk]
-        done = [False] * len(chunk)
-        for _ in range(max_new_tokens):
-            active = [j for j in range(len(chunk)) if not done[j]]
-            if not active:
-                break
-            width = max(len(seqs[j]) for j in active)
-            x = torch.full((len(active), width), PAD, dtype=torch.long)
-            for r, j in enumerate(active):
-                x[r, :len(seqs[j])] = torch.tensor(seqs[j])
+        n = batch_size if cache else len(chunk)  # graphs have a fixed batch, so a short last chunk is padded
+        seqs = [list(prompts[i][-(max_len - 1):]) for i in chunk] + [[BOS]] * (n - len(chunk))
+        replies = [[] for _ in range(n)]
+        forced = [[] for _ in range(n)]  # calculator output still to be fed in
+        sampled = [0] * n
+        active = [j < len(chunk) for j in range(n)]
+        if cache:  # prefill the prompts, right-padded
+            lengths = torch.tensor([len(s) for s in seqs], device="cuda")
+            x = torch.full((n, int(lengths.max())), PAD, dtype=torch.long)
+            for j, s in enumerate(seqs):
+                x[j, :len(s)] = torch.tensor(s)
+            positions = torch.arange(x.size(1), device="cuda").expand(n, -1)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                logits = model(x.cuda())
-            last = torch.tensor([len(seqs[j]) - 1 for j in active], device="cuda")
-            logits = logits[torch.arange(len(active), device="cuda"), last].float()
+                logits = model(x.cuda(), cache=kv, positions=positions, select=lengths - 1, used=x.size(1))
+            logits = logits[:, 0].float()
+        while any(active):
+            if not cache:
+                rows = [j for j in range(n) if active[j]]
+                x = torch.full((n, max(len(seqs[j]) for j in rows)), PAD, dtype=torch.long)
+                for j in rows:
+                    x[j, :len(seqs[j])] = torch.tensor(seqs[j])
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    logits = model(x.cuda())
+                last = torch.tensor([len(seqs[j]) - 1 if active[j] else 0 for j in range(n)], device="cuda")
+                logits = logits[torch.arange(n, device="cuda"), last].float()
             if temperature > 0:
                 values, indices = logits.topk(top_k, dim=-1)
                 picks = torch.multinomial((values / temperature).softmax(-1), 1)
-                next_ids = indices.gather(1, picks).squeeze(1)
+                next_ids = indices.gather(1, picks).squeeze(1).tolist()
             else:
-                next_ids = logits.argmax(-1)
-            for r, j in enumerate(active):
-                token = next_ids[r].item()
+                next_ids = logits.argmax(-1).tolist()
+            fed, fed_positions = [PAD] * n, [0] * n  # finished rows feed padding at position 0, which is harmless
+            for j in range(n):
+                if not active[j]:
+                    continue
+                was_forced = bool(forced[j])
+                token = forced[j].pop(0) if was_forced else next_ids[j]
+                sampled[j] += not was_forced
                 if token == END or len(seqs[j]) + 1 >= max_len:
-                    done[j] = True
-                if token != END:
-                    seqs[j].append(token)
-                    replies[j].append(token)
-                if tokenizer is not None and not done[j]:
+                    active[j] = False
+                    continue
+                seqs[j].append(token)
+                replies[j].append(token)
+                if tokenizer is not None and not was_forced:
                     call = CALL.search(tokenizer.decode(replies[j][-48:]))
                     result = calculate(call.group(1)) if call else None
                     if result is not None:
-                        inserted = tokenizer.encode(result + ">>").ids
-                        seqs[j] += inserted
-                        replies[j] += inserted
-                        done[j] = len(seqs[j]) + 1 >= max_len
+                        forced[j] = tokenizer.encode(result + ">>").ids
+                if sampled[j] >= max_new_tokens and not forced[j]:
+                    active[j] = False
+                    continue
+                fed[j], fed_positions[j] = token, len(seqs[j]) - 1
+            if cache and any(active):
+                needed = max(fed_positions) + 1
+                graph, graph_logits = steps[min(max_len, -(-needed // BUCKET) * BUCKET)]
+                token_buffer.copy_(torch.tensor(fed)[:, None])
+                position_buffer.copy_(torch.tensor(fed_positions)[:, None])
+                graph.replay()
+                logits = graph_logits[:, -1].float()
         for j, i in enumerate(chunk):
             outputs[i] = replies[j]
     return outputs
@@ -221,6 +283,32 @@ def evaluate_math(model, tokenizer, benchmark: str, limit: int = 0, max_new_toke
             "calls_per_reply": round(calls / n, 2), "n": n, "examples": examples}
 
 
+def pass_at_k(model, tokenizer, benchmark: str, k: int, limit: int = 0, temperature: float = 1.0,
+              max_new_tokens: int = 320) -> dict:
+    """
+    Samples k replies per problem and reports pass@j (the chance at least one of j samples is right, with the
+    unbiased estimator from the Codex paper) for j = 1, 2, 4, ... up to k. Answers are scored strictly.
+    """
+    problems = BENCHMARKS[benchmark]()
+    if limit:
+        problems = problems[:limit]
+    torch.manual_seed(0)
+    prompts = [prompt_ids(tokenizer, [{"role": "user", "content": q}]) for q, _ in problems for _ in range(k)]
+    replies = generate(model, prompts, max_new_tokens, temperature=temperature, tokenizer=tokenizer)
+    counts = []
+    for i, (_, gold) in enumerate(problems):
+        answers = [extract_number(tokenizer.decode(r)) for r in replies[i * k:(i + 1) * k]]
+        counts.append(sum(a is not None and math.isclose(float(a), gold, abs_tol=1e-4) for a in answers))
+    result = {"n": len(problems), "k": k, "temperature": temperature}
+    j = 1
+    while j <= k:
+        estimates = [1 - math.comb(k - c, j) / math.comb(k, j) for c in counts]
+        result[f"pass@{j}"] = round(sum(estimates) / len(estimates), 4)
+        j *= 2
+    result["solved_counts"] = {c: counts.count(c) for c in sorted(set(counts))}  # problems by number of correct samples
+    return result
+
+
 def main():
     from evaluate import load_model
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
@@ -229,9 +317,15 @@ def main():
     benchmarks = [b for b in BENCHMARKS if f"--{b}" in sys.argv]
     if benchmarks:
         record = {"checkpoint": str(Path(checkpoint_path).resolve().relative_to(ROOT))}
+        args = dict(a.removeprefix("--").split("=", 1) for a in sys.argv[2:] if "=" in a)
         for benchmark in benchmarks:
             t0 = time.perf_counter()
-            result = evaluate_math(model, tokenizer, benchmark)
+            if "pass_k" in args:
+                result = pass_at_k(model, tokenizer, benchmark, int(args["pass_k"]), int(args.get("limit", 0)),
+                                   float(args.get("temperature", 1.0)))
+                benchmark = f"{benchmark}_pass@k"
+            else:
+                result = evaluate_math(model, tokenizer, benchmark, int(args.get("limit", 0)))
             result["eval_s"] = round(time.perf_counter() - t0)
             print(benchmark, json.dumps(result, indent=2), flush=True)
             record[benchmark] = {k: v for k, v in result.items() if k != "examples"}

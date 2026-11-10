@@ -129,6 +129,23 @@ SVAMP (all 1,000 problems) is never trained on. "Lenient" takes the last number 
   Replies without `####` mostly loop until the 320-token limit.
 - The strict scores are no longer zero, so RL has some reward signal to start from, but not much.
 
+**pass@k** (sft-math, 16 samples per problem at temperature 1.0, top-k 50, first 200 problems of each, strict scoring):
+
+| Benchmark | pass@1 | pass@2 | pass@4 | pass@8 | pass@16 | Problems by correct samples (of 16) |
+|---|---:|---:|---:|---:|---:|---|
+| GSM8K | 1.1% | 2.2% | 4.3% | 8.4% | 16.0% | 0: 168, 1: 29, 2: 3 |
+| SVAMP | 2.6% | 5.0% | 9.6% | 17.8% | 30.5% | 0: 139, 1: 43, 2: 16, 3: 1, 4: 1 |
+
+pass@k grows almost linearly with k, and nearly every solved problem is solved by just one or two samples, so correct
+answers are rare draws, not problems the model reliably knows. With groups of 16 samples, an RL step would get reward
+signal on 16% of GSM8K problems and 30% of SVAMP problems.
+
+**KV cache:** generation now keeps each layer's keys and values and runs only the newest token per step, as a CUDA
+graph (Python couldn't issue the step's small kernels as fast as the GPU ran them). On the real model, cached and
+uncached logits match to 3e-5 in fp32. In bf16 both are 0.35 from fp32, so greedy replies can differ at near-ties
+(35 of 64 identical); rescored with the cache, sft-math gets GSM8K 1.90% and SVAMP 3.3%, within error of the scores
+above. The GSM8K eval went from 18 min to 93 s, and the pass@k run above, which took 89 min, would take about 8.
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without

@@ -48,6 +48,36 @@ class TransformerConfig:
             raise ValueError(f"num_kv_heads ({self.num_kv_heads}) must divide num_heads ({self.num_heads})")
     
 
+class KVCache:
+    """
+    Keys and values of the tokens seen so far, so generation only runs the newest token through the model. Each row
+    of the batch has its own positions, so rows can hold sequences of different lengths. The buffers are allocated
+    once, so a decode step can be captured as a CUDA graph.
+    """
+    def __init__(self, keys: list[torch.Tensor], values: list[torch.Tensor]):
+        self.keys, self.values = keys, values  # per layer application: (batch, kv_heads, max_len, head_dim)
+        self.positions = self.mask = None
+        self.used = 0
+
+    def start(self, positions: torch.Tensor, used: int | None = None):
+        """
+        Sets the positions (batch, seq_len) of the tokens in the next forward pass. Attention covers the first used
+        cache entries, which must include every position; passing it avoids a GPU sync, as CUDA graphs require.
+        """
+        self.positions = positions
+        self.used = used if used is not None else int(positions.max()) + 1
+        # Each token attends to the cache entries at or before its own position
+        keys = torch.arange(self.used, device=positions.device)
+        self.mask = (keys <= positions[..., None]).unsqueeze(1)  # (batch, 1, seq_len, used)
+
+    def write(self, slot: int, k: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Stores this pass's keys and values at their positions and returns the first used entries."""
+        index = self.positions[:, None, :, None].expand_as(k)
+        self.keys[slot].scatter_(2, index, k.to(self.keys[slot].dtype))
+        self.values[slot].scatter_(2, index, v.to(self.values[slot].dtype))
+        return self.keys[slot][:, :, :self.used], self.values[slot][:, :, :self.used]
+
+
 class TransformerBlock(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
@@ -91,14 +121,17 @@ class TransformerBlock(nn.Module):
     def apply_rope(self, x: torch.Tensor, rope_cos: torch.Tensor, rope_sin: torch.Tensor) -> torch.Tensor:
         # x shape: (batch_size, num_heads, seq_len, head_dim)
         seq_len = x.size(2)
+        if rope_cos.dim() == 2:  # the full tables, for positions 0 to seq_len - 1
+            rope_cos, rope_sin = rope_cos[:seq_len], rope_sin[:seq_len]
         x1, x2 = torch.chunk(x, 2, dim=-1) # split along the model dimension
         x_swapped = torch.cat([-x2, x1], dim=-1) # merge the halves with negation to set up the -sin term
         # This realizes the ind j to ind j + d/2 pairing of cos and sin in the half-split RoPE formulation
         # Apply RoPE: x_rotated = x * cos + x_swapped * sin
-        return x * rope_cos[:seq_len] + x_swapped * rope_sin[:seq_len]
+        return x * rope_cos + x_swapped * rope_sin
         
     def forward(self, x: torch.Tensor, rope_cos: torch.Tensor, rope_sin: torch.Tensor,
-                v_first: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+                v_first: torch.Tensor | None = None, cache: KVCache | None = None,
+                slot: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len, model_dim = x.size()
         # Save the original input for residual connection
         x_orig = x
@@ -126,13 +159,18 @@ class TransformerBlock(nn.Module):
         # Apply RoPE positional embeddings to the query and key projections
         q = self.apply_rope(q, rope_cos, rope_sin)
         k = self.apply_rope(k, rope_cos, rope_sin)
+        if cache is not None:
+            k, v = cache.write(slot, k, v)
         # Grouped-query attention: each group of query heads shares one key/value head
         kv_repeats = self.config.num_heads // self.config.num_kv_heads
         if kv_repeats > 1:
             k = k.repeat_interleave(kv_repeats, dim=1)
             v = v.repeat_interleave(kv_repeats, dim=1)
         # Perform causal multi-head attention
-        attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.config.dropout, is_causal=True)
+        if cache is not None:
+            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=cache.mask)
+        else:
+            attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.config.dropout, is_causal=True)
         # Reshape to (batch_size, seq_len, num_heads, head_dim) then (batch_size, seq_len, model_dim)
         # to effectively concatenate the outputs from all heads
         attn_out = attn_out.transpose(1, 2).reshape(batch_size, seq_len, model_dim)
@@ -219,7 +257,28 @@ class Transformer(nn.Module):
                 else:
                     nn.init.normal_(p, mean=0.0, std=residual_std)
 
-    def forward(self, input_tokens: torch.Tensor, return_hidden: bool = False) -> torch.Tensor:
+    def make_cache(self, batch_size: int, dtype: torch.dtype = torch.bfloat16) -> KVCache:
+        c = self.config
+        applications = c.num_layers + (c.loop_end - c.loop_start) * (c.num_loops - 1)
+        shape = (batch_size, c.num_kv_heads, c.max_seq_len, c.head_dim)
+        device = self.rope_cos.device
+        return KVCache([torch.zeros(shape, dtype=dtype, device=device) for _ in range(applications)],
+                       [torch.zeros(shape, dtype=dtype, device=device) for _ in range(applications)])
+
+    def forward(self, input_tokens: torch.Tensor, return_hidden: bool = False, cache: KVCache | None = None,
+                positions: torch.Tensor | None = None, select: torch.Tensor | None = None,
+                used: int | None = None) -> torch.Tensor:
+        """
+        With a cache, positions (batch, seq_len) gives each token's position (below max_seq_len), and the keys and
+        values are added to the cache; used is passed to KVCache.start. select (batch,) picks one index along
+        seq_len per row, so only those logits are computed.
+        """
+        if cache is not None:
+            assert self.config.bigram_rows == 0, "the bigram embedding needs the previous token, which a cache lacks"
+            cache.start(positions, used)
+            rope_cos, rope_sin = self.rope_cos[positions].unsqueeze(1), self.rope_sin[positions].unsqueeze(1)
+        else:
+            rope_cos, rope_sin = self.rope_cos, self.rope_sin
         assert input_tokens.size(1) <= self.config.max_seq_len, (
             f"Input sequence length ({input_tokens.size(1)}) "
             f"exceeds maximum sequence length ({self.config.max_seq_len})"
@@ -240,7 +299,9 @@ class Transformer(nn.Module):
         for i, layer in enumerate(layers):
             if c.embed_skip:
                 x = x + self.embed_skip[i] * embedded
-            x, v_first = layer(x, self.rope_cos, self.rope_sin, v_first if i > 0 else None)
+            x, v_first = layer(x, rope_cos, rope_sin, v_first if i > 0 else None, cache, i)
+        if select is not None:
+            x = x[torch.arange(x.size(0), device=x.device), select].unsqueeze(1)
         x = self.vocab_prenorm(x)
         if self.factorized:
             x = self.embed_out(x)
