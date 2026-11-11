@@ -21,7 +21,7 @@ solutions, with a sandboxed Python tool, then reached GSM8K 10.9% and SVAMP 26.6
 Distilling from SmolLM2-360M or -1.7B loses to direct training at the same 45-minute budget (1.2529 and 1.4247
 vs 1.1883 BPB), because the teacher's forward passes leave the student with 31% and 12% of the tokens.
 
-The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1765** (lower is better):
+The recipe came from 45-minute speedruns, which took the score from a baseline of 1.3709 to **1.1732** (lower is better):
 
 | Change | Weighted BPB |
 |---|---:|
@@ -37,6 +37,7 @@ The recipe came from 45-minute speedruns, which took the score from a baseline o
 | Sampled softmax for the first 70% (average of 2 seeds) | 1.1919 |
 | Sampled softmax until 85% (average of 2 seeds) | 1.1882 |
 | Value residual (average of 2 seeds) | 1.1765 |
+| Batched Muon: the same update, 1.7x faster (one run; free speed) | 1.1732 |
 
 See [RESULTS.md](RESULTS.md) for every run, including the ones that didn't help, and `results.jsonl` for full configs and metrics.
 

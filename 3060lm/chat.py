@@ -164,6 +164,49 @@ def decode_graphs(model, batch_size: int) -> tuple:
     return graphs[batch_size]
 
 
+class _Reply:
+    """One reply in progress: the sequence so far, and tool output still to be fed in."""
+    def __init__(self, index: int, prompt: list[int]):
+        self.index, self.seq = index, list(prompt)
+        self.tokens, self.chosen = [], []  # reply tokens, and 1 for each the model sampled (0 for tool output)
+        self.forced = []  # tool output still to be fed in, one token per step
+        self.sampled, self.ended = 0, False
+
+    def advance(self, sampled_token: int, max_new_tokens: int, max_len: int, tokenizer) -> bool:
+        """Takes the next token (pending tool output first) and returns whether the reply continues."""
+        was_forced = bool(self.forced)
+        token = self.forced.pop(0) if was_forced else sampled_token
+        self.sampled += not was_forced
+        if token == END or len(self.seq) + 1 >= max_len:
+            self.ended = token == END
+            return False
+        self.seq.append(token)
+        self.tokens.append(token)
+        self.chosen.append(int(not was_forced))
+        if tokenizer is not None and not was_forced:
+            tail = tokenizer.decode(self.tokens[-48:])
+            call = CALL.search(tail)
+            result = calculate(call.group(1)) if call else None
+            if result is not None:
+                self.forced = tokenizer.encode(result + ">>").ids
+            elif tail.endswith("()\n") and (code := python_call(tokenizer.decode(self.tokens))):
+                self.forced = tokenizer.encode(python_tool(*code) + "\n").ids
+        return self.sampled < max_new_tokens or bool(self.forced)
+
+    def output(self, details: bool):
+        return {"tokens": self.tokens, "sampled": self.chosen, "ended": self.ended} if details else self.tokens
+
+
+def _sample(logits: torch.Tensor, temperature: float, top_k: int) -> list[int]:
+    if temperature > 0 and not top_k:
+        return torch.multinomial((logits / temperature).softmax(-1), 1).squeeze(1).tolist()
+    if temperature > 0:
+        values, indices = logits.topk(top_k, dim=-1)
+        picks = torch.multinomial((values / temperature).softmax(-1), 1)
+        return indices.gather(1, picks).squeeze(1).tolist()
+    return logits.argmax(-1).tolist()
+
+
 @torch.no_grad()
 def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: float = 0.0,
              top_k: int = 50, batch_size: int = 64, tokenizer=None, cache: bool = True,
@@ -172,89 +215,89 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
     Generates a reply of up to max_new_tokens sampled tokens for each prompt, stopping at <|im_end|>. With a
     tokenizer, tool calls are answered, with the output fed in one token per step: when a reply ends with
     "<<expression=", the calculator appends the result and ">>", and when it ends with a ```python block and
-    ">>> name()", the Python tool appends the result line. With the cache, prompts are prefilled and each step runs only the newest token,
-    as a CUDA graph; cache=False reruns the whole sequence every step instead, which is slow but simple, for checks.
-    top_k=0 samples from the full distribution. With details, each reply is a dict with its tokens, which of them
-    the model sampled (rather than the calculator), and whether it ended with <|im_end|> (which isn't in tokens).
+    ">>> name()", the Python tool appends the result line.
+
+    With the cache, batch_size slots decode together as a CUDA graph that runs only the newest token, and a slot
+    whose reply ends takes the next prompt (prefilled in groups of a quarter of the slots), so the batch stays busy.
+    cache=False reruns every whole sequence each step instead, which is slow but simple, for checks.
+    top_k=0 samples from the full distribution. With details, each reply is a dict with its tokens, which of them the
+    model sampled (rather than a tool), and whether it ended with <|im_end|> (which isn't in tokens).
     """
     max_len = model.config.max_seq_len
-    batch_size = min(batch_size, len(prompts))
-    if cache:
-        kv, token_buffer, position_buffer, steps = decode_graphs(model, batch_size)
-    order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
     outputs = [None] * len(prompts)
-    for b in range(0, len(order), batch_size):
-        chunk = order[b:b + batch_size]
-        n = batch_size if cache else len(chunk)  # graphs have a fixed batch, so a short last chunk is padded
-        seqs = [list(prompts[i][-(max_len - 1):]) for i in chunk] + [[BOS]] * (n - len(chunk))
-        replies = [[] for _ in range(n)]
-        forced = [[] for _ in range(n)]  # calculator output still to be fed in
-        sampled = [0] * n
-        chosen = [[] for _ in range(n)]  # per reply token: 1 if sampled, 0 if calculator output
-        ended = [False] * n
-        active = [j < len(chunk) for j in range(n)]
-        if cache:  # prefill the prompts, right-padded
-            lengths = torch.tensor([len(s) for s in seqs], device="cuda")
-            x = torch.full((n, int(lengths.max())), PAD, dtype=torch.long)
-            for j, s in enumerate(seqs):
-                x[j, :len(s)] = torch.tensor(s)
-            positions = torch.arange(x.size(1), device="cuda").expand(n, -1)
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                logits = model(x.cuda(), cache=kv, positions=positions, select=lengths - 1, used=x.size(1))
-            logits = logits[:, 0].float()
-        while any(active):
-            if not cache:
-                rows = [j for j in range(n) if active[j]]
-                x = torch.full((n, max(len(seqs[j]) for j in rows)), PAD, dtype=torch.long)
-                for j in rows:
-                    x[j, :len(seqs[j])] = torch.tensor(seqs[j])
+    order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
+    if not cache:
+        for b in range(0, len(order), batch_size):
+            active = [_Reply(i, prompts[i][-(max_len - 1):]) for i in order[b:b + batch_size]]
+            while active:
+                x = torch.full((len(active), max(len(r.seq) for r in active)), PAD, dtype=torch.long)
+                for j, r in enumerate(active):
+                    x[j, :len(r.seq)] = torch.tensor(r.seq)
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     logits = model(x.cuda())
-                last = torch.tensor([len(seqs[j]) - 1 if active[j] else 0 for j in range(n)], device="cuda")
-                logits = logits[torch.arange(n, device="cuda"), last].float()
-            if temperature > 0 and not top_k:
-                next_ids = torch.multinomial((logits / temperature).softmax(-1), 1).squeeze(1).tolist()
-            elif temperature > 0:
-                values, indices = logits.topk(top_k, dim=-1)
-                picks = torch.multinomial((values / temperature).softmax(-1), 1)
-                next_ids = indices.gather(1, picks).squeeze(1).tolist()
+                last = torch.tensor([len(r.seq) - 1 for r in active], device="cuda")
+                next_ids = _sample(logits[torch.arange(len(active), device="cuda"), last].float(), temperature, top_k)
+                still = []
+                for r, token in zip(active, next_ids):
+                    if r.advance(token, max_new_tokens, max_len, tokenizer):
+                        still.append(r)
+                    else:
+                        outputs[r.index] = r.output(details)
+                active = still
+        return outputs
+
+    batch_size = min(batch_size, len(prompts))
+    kv, token_buffer, position_buffer, steps = decode_graphs(model, batch_size)
+    queue = list(reversed(order))  # popped from the end, shortest prompt first
+    slots = [None] * batch_size
+    logits = torch.zeros((batch_size, model.config.vocab_size), device="cuda")
+
+    def refill(free: list[int]):
+        """Prefills the next prompts into free slots and sets their logits."""
+        new = [_Reply(i, prompts[i][-(max_len - 1):]) for i in [queue.pop() for _ in range(min(len(free), len(queue)))]]
+        rows = free[:len(new)]
+        width = max(len(r.seq) for r in new)
+        x = torch.full((len(new), width), PAD, dtype=torch.long)
+        for j, r in enumerate(new):
+            x[j, :len(r.seq)] = torch.tensor(r.seq)
+        fresh = model.make_cache(len(new), length=width)
+        lengths = torch.tensor([len(r.seq) for r in new], device="cuda")
+        positions = torch.arange(width, device="cuda").expand(len(new), -1)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            prefill = model(x.cuda(), cache=fresh, positions=positions, select=lengths - 1, used=width)
+        index = torch.tensor(rows, device="cuda")
+        for slot in range(len(kv.keys)):
+            kv.keys[slot][index, :, :width] = fresh.keys[slot]
+            kv.values[slot][index, :, :width] = fresh.values[slot]
+        logits[index] = prefill[:, 0].float()
+        for row, r in zip(rows, new):
+            slots[row] = r
+
+    refill(list(range(batch_size)))
+    while any(slots):
+        next_ids = _sample(logits, temperature, top_k)
+        # Empty slots feed padding at the last cache position, which no sequence reaches, so it's never read
+        fed, fed_positions = [PAD] * batch_size, [max_len - 1] * batch_size
+        decoding = []
+        for j, r in enumerate(slots):
+            if r is None:
+                continue
+            if r.advance(next_ids[j], max_new_tokens, max_len, tokenizer):
+                fed[j], fed_positions[j] = r.seq[-1], len(r.seq) - 1
+                decoding.append(j)
             else:
-                next_ids = logits.argmax(-1).tolist()
-            fed, fed_positions = [PAD] * n, [0] * n  # finished rows feed padding at position 0, which is harmless
-            for j in range(n):
-                if not active[j]:
-                    continue
-                was_forced = bool(forced[j])
-                token = forced[j].pop(0) if was_forced else next_ids[j]
-                sampled[j] += not was_forced
-                if token == END or len(seqs[j]) + 1 >= max_len:
-                    active[j] = False
-                    ended[j] = token == END
-                    continue
-                seqs[j].append(token)
-                replies[j].append(token)
-                chosen[j].append(int(not was_forced))
-                if tokenizer is not None and not was_forced:
-                    tail = tokenizer.decode(replies[j][-48:])
-                    call = CALL.search(tail)
-                    result = calculate(call.group(1)) if call else None
-                    if result is not None:
-                        forced[j] = tokenizer.encode(result + ">>").ids
-                    elif tail.endswith("()\n") and (code := python_call(tokenizer.decode(replies[j]))):
-                        forced[j] = tokenizer.encode(python_tool(*code) + "\n").ids
-                if sampled[j] >= max_new_tokens and not forced[j]:
-                    active[j] = False
-                    continue
-                fed[j], fed_positions[j] = token, len(seqs[j]) - 1
-            if cache and any(active):
-                needed = max(fed_positions) + 1
-                graph, graph_logits = steps[min(max_len, -(-needed // BUCKET) * BUCKET)]
-                token_buffer.copy_(torch.tensor(fed)[:, None])
-                position_buffer.copy_(torch.tensor(fed_positions)[:, None])
-                graph.replay()
-                logits = graph_logits[:, -1].float()
-        for j, i in enumerate(chunk):
-            outputs[i] = {"tokens": replies[j], "sampled": chosen[j], "ended": ended[j]} if details else replies[j]
+                outputs[r.index] = r.output(details)
+                slots[j] = None
+        if decoding:
+            needed = max(fed_positions[j] for j in decoding) + 1
+            graph, graph_logits = steps[min(max_len, -(-needed // BUCKET) * BUCKET)]
+            token_buffer.copy_(torch.tensor(fed)[:, None])
+            position_buffer.copy_(torch.tensor(fed_positions)[:, None])
+            graph.replay()
+            logits = graph_logits[:, -1].float()
+        free = [j for j, r in enumerate(slots) if r is None]
+        if queue and free and (len(free) >= max(1, batch_size // 4) or not decoding):
+            refill(free)
     return outputs
 
 

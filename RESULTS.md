@@ -77,6 +77,7 @@ Full configs and metrics for every run are in `results.jsonl`.
 | 17b | 15a at 16×704, 60 minutes | 1.1861 | 1.2151 | 1.1184 | 101.0M | 94M | 26.0k |
 | 17c | 17b with LR 7e-4 | 1.1983 | 1.2269 | 1.1317 | 101.0M | 89M | 24.7k |
 | 17d | 17b with LR 1.4e-3 | 1.1904 | 1.2191 | 1.1236 | 101.0M | 89M | 24.6k |
+| 19a | 15a with BatchedMuon (same update, same-shape matrices orthogonalized together) | 1.1732 | 1.2031 | 1.1035 | 48.2M | 158M | 58.4k |
 
 ## Long Run
 
@@ -255,6 +256,14 @@ Measured on 16×704, micro-batch 16 × 512 for pretraining and 8 × 1024 for SFT
 - The GPU wasn't throttling: 1,942 of 2,145 MHz, 128 of 170 W, 72°C.
 
 ## Notes
+
+- **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one
+  batched matmul: 99.6 ms per step instead of 173.5 ms on 16×704's matrices, and as close to an fp64 reference as
+  torch's version (1.06-1.09% relative difference vs 1.09-1.36%, both bf16 rounding). At 12×512 it gives 58.4k tok/s
+  vs 56.0-56.8k for 15a and 16a, and 1.1732 vs their 1.1765 average. The update is the same, so the gain is free
+  speed and the BPB difference is mostly noise plus 3-4% more tokens. Generation now refills finished rows with the
+  next prompt (continuous batching): 512 RL-style samples take 8.9 s instead of 20.8 s, and greedy GSM8K and SVAMP
+  scores are unchanged within error.
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without
   downloads reached about 33.2k tok/s, so the clean compile speedup is closer to 26% than 31%.

@@ -257,10 +257,11 @@ class Transformer(nn.Module):
                 else:
                     nn.init.normal_(p, mean=0.0, std=residual_std)
 
-    def make_cache(self, batch_size: int, dtype: torch.dtype = torch.bfloat16) -> KVCache:
+    def make_cache(self, batch_size: int, dtype: torch.dtype = torch.bfloat16, length: int = 0) -> KVCache:
+        """A KV cache for batch_size rows of up to length tokens (max_seq_len by default)."""
         c = self.config
         applications = c.num_layers + (c.loop_end - c.loop_start) * (c.num_loops - 1)
-        shape = (batch_size, c.num_kv_heads, c.max_seq_len, c.head_dim)
+        shape = (batch_size, c.num_kv_heads, length or c.max_seq_len, c.head_dim)
         device = self.rope_cos.device
         return KVCache([torch.zeros(shape, dtype=dtype, device=device) for _ in range(applications)],
                        [torch.zeros(shape, dtype=dtype, device=device) for _ in range(applications)])

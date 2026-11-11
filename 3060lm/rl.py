@@ -177,7 +177,8 @@ def main():
         mean_reward = rewards.mean().item()
         signal = int((rewards.std(1) > 0).sum())
         lengths = [len(r["tokens"]) for r in replies]
-        calls = sum(tokenizer.decode(r["tokens"]).count("<<") for r in replies) / len(replies)
+        calls = sum(tokenizer.decode(r["tokens"]).count("<<") + tokenizer.decode(r["tokens"]).count("\n>>> ")
+                    for r in replies) / len(replies)
         writer.add_scalar("train/reward", mean_reward, step + 1)
         writer.add_scalar("train/groups_with_signal", signal, step + 1)
         writer.add_scalar("train/reply_tokens", sum(lengths) / len(lengths), step + 1)

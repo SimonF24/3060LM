@@ -185,6 +185,62 @@ def distill_loss(logits: torch.Tensor, teacher_logits: torch.Tensor, targets: to
     return alpha * kl + (1 - alpha) * ce, ce
 
 
+class BatchedMuon(torch.optim.Optimizer):
+    """
+    torch.optim.Muon's update (Nesterov momentum, then 5 quintic Newton-Schulz iterations in bf16 to orthogonalize it,
+    with the LR scaled by the matrix shape), but matrices of the same shape are orthogonalized together with batched
+    matmuls instead of one at a time, which keeps the GPU much busier on small matrices. The state and param group
+    keys match torch.optim.Muon's, so checkpoints from either load into the other.
+    """
+    def __init__(self, params, lr: float, weight_decay: float = 0.0, momentum: float = 0.95, nesterov: bool = True,
+                 ns_coefficients: tuple = (3.4445, -4.7750, 2.0315), eps: float = 1e-7, ns_steps: int = 5,
+                 adjust_lr_fn: str | None = None):
+        super().__init__(params, dict(lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov,
+                                      ns_coefficients=ns_coefficients, eps=eps, ns_steps=ns_steps,
+                                      adjust_lr_fn=adjust_lr_fn))
+
+    @staticmethod
+    def orthogonalize(x: torch.Tensor, coefficients: tuple, steps: int, eps: float) -> torch.Tensor:
+        """Newton-Schulz on a batch of matrices (batch, rows, cols) with rows <= cols, in bf16."""
+        a, b, c = coefficients
+        x = x.bfloat16()
+        x = x / x.norm(dim=(-2, -1), keepdim=True).clamp(min=eps)
+        for _ in range(steps):
+            gram = x @ x.mT
+            x = torch.baddbmm(x, torch.baddbmm(gram, gram, gram, beta=b, alpha=c), x, beta=a)
+        return x
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            params = [p for p in group["params"] if p.grad is not None]
+            if not params:
+                continue
+            grads = [p.grad for p in params]
+            buffers = [self.state[p].setdefault("momentum_buffer", torch.zeros_like(p)) for p in params]
+            torch._foreach_lerp_(buffers, grads, 1 - group["momentum"])
+            updates = torch._foreach_lerp(grads, buffers, group["momentum"]) if group["nesterov"] else buffers
+            if group["weight_decay"]:
+                torch._foreach_mul_(params, 1 - group["lr"] * group["weight_decay"])
+            shapes = {}
+            for i, p in enumerate(params):
+                shapes.setdefault(tuple(p.shape), []).append(i)
+            for (rows, cols), index in shapes.items():
+                batch = torch.stack([updates[i] for i in index])
+                tall = rows > cols
+                ortho = self.orthogonalize(batch.mT if tall else batch, group["ns_coefficients"], group["ns_steps"],
+                                           group["eps"])
+                if tall:
+                    ortho = ortho.mT
+                if group["adjust_lr_fn"] == "match_rms_adamw":
+                    lr = group["lr"] * 0.2 * math.sqrt(max(rows, cols))
+                elif group["adjust_lr_fn"] in (None, "original"):
+                    lr = group["lr"] * math.sqrt(max(1, rows / cols))
+                else:
+                    lr = group["lr"]
+                torch._foreach_add_([params[i] for i in index], list(ortho.unbind()), alpha=-lr)
+
+
 def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, float]]:
     """Returns (optimizer, base LR) pairs. Embeddings, the output projection and the 1D RMSNorm scales always use AdamW."""
     adamw_params, muon_params = [], []
@@ -196,8 +252,8 @@ def build_optimizers(model, cfg: Config) -> list[tuple[torch.optim.Optimizer, fl
                                      betas=(0.9, cfg.beta2), fused=True), cfg.lr)]
     if muon_params:
         # match_rms_adamw scales the update to 0.2 * lr per entry, so LRs are on a similar scale to AdamW
-        optimizers.append((torch.optim.Muon(muon_params, lr=cfg.muon_lr, weight_decay=0.0,
-                                            momentum=cfg.muon_momentum, adjust_lr_fn="match_rms_adamw"),
+        optimizers.append((BatchedMuon(muon_params, lr=cfg.muon_lr, weight_decay=0.0,
+                                       momentum=cfg.muon_momentum, adjust_lr_fn="match_rms_adamw"),
                            cfg.muon_lr))
     print(f"AdamW: {sum(p.numel() for p in adamw_params) / 1e6:.1f}M params, "
           f"Muon: {sum(p.numel() for p in muon_params) / 1e6:.1f}M params")
