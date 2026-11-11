@@ -231,6 +231,29 @@ verified, so some are wrong.
   are a rescore with the fixed tool (in benchmarks.jsonl). The training data wasn't affected (96.4% of solutions run
   with the fix vs 96.3%).
 
+### RL from the TinyGSM pilot (`rl-tinygsm`)
+
+`rl.py` from sft-tinygsm with the Python tool: 400 steps of 32 GSM8K training problems × 16 replies, otherwise as
+rl-math. 103 min (generation 9-19 s per step with continuous batching), 9.7GB peak, no restarts.
+
+| Model | GSM8K | SVAMP (held out) | Training reward |
+|---|---:|---:|---|
+| sft-tinygsm (rescored with continuous batching) | 10.54% | 27.2% | |
+| rl-tinygsm | **16.60 ± 1.02%** | **29.5 ± 1.4%** | 8% at step 50, 12-25% from step 100 |
+
+Periodic evals (first 400 problems of each, greedy):
+
+| Step | 0 | 50 | 100 | 150 | 200 | 250 | 300 | 350 | 400 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| GSM8K | 12.25% | 13.00% | 14.50% | 18.25% | 16.50% | 17.00% | 17.00% | 18.75% | 18.50% |
+| SVAMP | 27.25% | 29.25% | 27.50% | 31.00% | 27.50% | 28.25% | 26.00% | 31.00% | 28.75% |
+
+- With about 10% of samples correct, 8-17 of 32 groups per step carry signal (vs 1-5 for rl-math), and RL now
+  improves the reasoning rather than just the format: GSM8K rises 6 points, about 5.6 standard errors.
+- SVAMP rises 2.3 points, under 2 standard errors. Most of RL's gain stays on the problems it trains on (GSM8K's
+  training split, in GSM8K's style).
+- Replies stay short (72-87 tokens) with exactly one Python call each.
+
 ## Profile (after the TinyGSM pilot)
 
 Measured on 16×704, micro-batch 16 × 512 for pretraining and 8 × 1024 for SFT:

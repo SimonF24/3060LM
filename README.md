@@ -16,7 +16,8 @@ and writes fluent replies, but facts and arithmetic are often wrong, and GSM8K i
 taken as the answer). A short math stage with calculator calls taught the `#### N` format and tool use, which gives
 GSM8K 1.8% and SVAMP 2.9%, but the model still mostly sets up the wrong calculations. RL (2.5 hours) then raised GSM8K to 3.9% and
 held-out SVAMP to 12.5%, mostly by making replies finish instead of looping. SFT on 109M tokens of TinyGSM's Python
-solutions, with a sandboxed Python tool, then reached GSM8K 10.9% and SVAMP 26.6% without RL.
+solutions, with a sandboxed Python tool, then reached GSM8K 10.9% and SVAMP 26.6% without RL, and RL
+from there reached GSM8K 16.6% and SVAMP 29.5%.
 
 Distilling from SmolLM2-360M or -1.7B loses to direct training at the same 45-minute budget (1.2529 and 1.4247
 vs 1.1883 BPB), because the teacher's forward passes leave the student with 31% and 12% of the tokens.
@@ -141,7 +142,7 @@ The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data
 1. ~~**Choose model size and shape**~~: 16×704, with LR checked at that size.
 2. ~~**Final pretraining run**~~: 24 hours, 0.9838 BPB.
 3. ~~**Chat fine-tuning (SFT)**~~: chat format and calculator calls learned; GSM8K 1.8%, SVAMP 2.9%.
-4. ~~**RL with verifiable rewards**~~: GSM8K 3.9%, SVAMP 12.5%, with the gain in the first 50 steps.
+4. ~~**RL with verifiable rewards**~~: after TinyGSM SFT with a Python tool, GSM8K 16.6%, SVAMP 29.5%.
 5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
 
 ## System Specs
