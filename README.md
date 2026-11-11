@@ -1,12 +1,28 @@
 # 3060LM
 
-The goal of this repo is to train the best language model possible on a home desktop with a single NVIDIA RTX 3060, using at most about one day of training. Inspiration includes <a href="https://github.com/karpathy/nanochat/tree/master">nanochat</a>, <a href="https://github.com/KellerJordan/modded-nanogpt">the NanoGPT speedrun</a>, and <a href="https://github.com/openai/parameter-golf/">OpenAI Parameter Golf</a>.
+The goal of this repo is to train the best language model possible on a home desktop with a single NVIDIA RTX 3060,
+with two fixed GPU-time budgets: **24 hours of pretraining**, then **24 hours of post-training** (every stage after the
+pretrained checkpoint: chat SFT, math SFT and RL), counting training time but not evaluation. Inspiration includes <a href="https://github.com/karpathy/nanochat/tree/master">nanochat</a>, <a href="https://github.com/KellerJordan/modded-nanogpt">the NanoGPT speedrun</a>, and <a href="https://github.com/openai/parameter-golf/">OpenAI Parameter Golf</a>.
 
 The target is a small general-purpose chat model with a STEM bent, chosen because math and code give us tasks where answers can be checked automatically during RL post-training.
 
 The original pipeline was written by hand. Since then, experiments have been run with Claude Code, starting from that hand-written model as the baseline and measuring every change against it.
 
 ## Status
+
+**GPU time in the current best model (rl-tinygsm):**
+
+| Stage | Run | GPU time |
+|---|---|---:|
+| Pretraining | long-704 | 24.0 h of 24 h |
+| Chat SFT | sft-704 | 3.8 h |
+| Math SFT (TinyGSM, 1 of 17 shards) | sft-tinygsm | 1.4 h |
+| RL (includes about 9 min of periodic evals) | rl-tinygsm | 1.7 h |
+| Post-training total | | 7.0 h of 24 h |
+
+Development compute isn't in these numbers: about 58 GPU-hours of speedruns, probes and distillation runs, 2.7 h of
+post-training branches that weren't kept (sft-math, rl-math), and roughly 5 h of evaluation and profiling, so about
+95-100 GPU-hours on the project in all.
 
 Pretraining is done. The 24-hour run (16×704, 101M parameters, 2.15B tokens) reached **0.9838 bits per byte**, with
 HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%.
