@@ -8,9 +8,12 @@ GSM8K's test split is never trained on; chat.py --gsm8k scores it.
 Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
        python prepare_sft.py --out=sft-math --calculator=1 --gsm8k_repeats=3 --smoltalk_groups=10
            # the math stage: GSM8K with calculator calls, plus 10,000 smol-smoltalk conversations as replay
+       python prepare_sft.py --out=sft-tinygsm --tinygsm_shards=1 --gsm8k_repeats=0 --smoltalk_groups=20
+           # TinyGSM's Python solutions (pytool.py runs them), decontaminated against GSM8K test and SVAMP
 """
 import bisect
 import json
+import re
 from multiprocessing import Pool
 from pathlib import Path
 import sys
@@ -19,7 +22,8 @@ import numpy as np
 import pyarrow.parquet as pq
 from tokenizers import Tokenizer
 
-from chat import PAD, TOKENIZER_PATH, encode_conversation, gsm8k_answer
+from chat import PAD, TOKENIZER_PATH, encode_conversation, gsm8k_answer, gsm8k_problems, svamp_problems
+from pytool import execute, limit_memory
 
 ROOT = Path(__file__).parent.parent
 RAW = ROOT / "data/raw"
@@ -29,13 +33,57 @@ SEQ_LEN = int(ARGS.get("seq_len", 1024))
 GSM8K_REPEATS = int(ARGS.get("gsm8k_repeats", 4))  # GSM8K is small, so it's repeated to be a visible share of the mix
 CALCULATOR = ARGS.get("calculator", "0") == "1"  # keep GSM8K's <<48/2=24>> annotations as calculator calls
 SMOLTALK_GROUPS = int(ARGS.get("smoltalk_groups", 0))  # 1,000-row groups of smol-smoltalk to use; 0 uses all
+TINYGSM_SHARDS = int(ARGS.get("tinygsm_shards", 0))  # TinyGSM parquet files to use, about 700,000 problems each
 VAL_CONVERSATIONS = 2_000
+NGRAM = 10  # a training problem sharing this many consecutive words with a benchmark problem is dropped
+
+
+def ngrams(text: str) -> set[tuple[str, ...]]:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {tuple(words[i:i + NGRAM]) for i in range(len(words) - NGRAM + 1)}
+
+
+_benchmark_ngrams = None
+def contaminated(question: str) -> bool:
+    """Whether the question shares a NGRAM-word sequence with a GSM8K test or SVAMP problem."""
+    global _benchmark_ngrams
+    if _benchmark_ngrams is None:
+        _benchmark_ngrams = set().union(*(ngrams(q) for q, _ in gsm8k_problems() + svamp_problems()))
+    return not ngrams(question).isdisjoint(_benchmark_ngrams)
+
+
+def tinygsm_reply(code: str) -> str | None:
+    """
+    A TinyGSM solution as a reply that calls the Python tool: the docstring (a copy of the question) and blank lines
+    are removed, simple_math_problem becomes solution, and the code is run for its result. None if it doesn't run
+    or doesn't return a number.
+    """
+    code = re.sub(r'\n[ \t]*("""|\'\'\')(.*?)\1', "", code, count=1, flags=re.S)
+    code, renamed = re.subn(r"def simple_math_problem\(\)\s*(->[^:]*)?:", "def solution():", code)
+    if not renamed:
+        return None
+    code = re.sub(r"\n\s*\n", "\n", code).strip()
+    result = execute(code, "solution")
+    if result.startswith("Error"):
+        return None
+    return f"```python\n{code}\n```\n>>> solution()\n{result}\n#### {result}"
 
 def load_conversations(source: str, part: int) -> list[list[dict]]:
     """
     One part of a source: a 1,000-row group of a smol-smoltalk file, or all of GSM8K's train split.
     Workers load their own parts, so no process holds all the text at once.
     """
+    if source.startswith("tinygsm/"):
+        rows = pq.ParquetFile(RAW / "tinygsm/data" / source.removeprefix("tinygsm/")).read_row_group(part).to_pylist()
+        conversations = []
+        for r in rows:
+            if contaminated(r["question"]):
+                continue
+            reply = tinygsm_reply(r["code"])
+            if reply is not None:
+                conversations.append([{"role": "user", "content": r["question"]},
+                                      {"role": "assistant", "content": reply}])
+        return conversations
     if source == "gsm8k":
         rows = pq.read_table(RAW / "gsm8k/main/train-00000-of-00001.parquet").to_pylist()
         return [[{"role": "user", "content": r["question"]},
@@ -57,7 +105,8 @@ def _encode(job):
 
 
 def encode_all(jobs: list[tuple[str, int]]) -> list[tuple[np.ndarray, np.ndarray]]:
-    with Pool(6, maxtasksperchild=20) as pool:
+    # Workers run TinyGSM's code, so their memory is capped (pytool.execute sets the time limit)
+    with Pool(6, initializer=limit_memory, initargs=(2 << 30,), maxtasksperchild=20) as pool:
         return [c for batch in pool.imap(_encode, jobs) for c in batch]
 
 
@@ -109,11 +158,13 @@ def main():
     if SMOLTALK_GROUPS:
         train_jobs = train_jobs[:SMOLTALK_GROUPS]
     train_jobs += [("gsm8k", 0)] * GSM8K_REPEATS
+    for f in sorted((RAW / "tinygsm/data").glob("train-*.parquet"))[:TINYGSM_SHARDS]:
+        train_jobs += [(f"tinygsm/{f.name}", g) for g in range(pq.ParquetFile(f).num_row_groups)]
     val_jobs = [("test-00000-of-00001.parquet", g) for g in range(VAL_CONVERSATIONS // 1000)]
     print(f"{len(train_jobs)} train jobs, GSM8K x {GSM8K_REPEATS}, val {VAL_CONVERSATIONS:,}", flush=True)
 
     meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS, "calculator": CALCULATOR,
-            "smoltalk_groups": SMOLTALK_GROUPS}
+            "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS}
     for split, jobs in [("train", train_jobs), ("val", val_jobs)]:
         ids, mask, stats = pack(encode_all(jobs), seed=0)
         np.save(OUT / f"{split}_ids.npy", ids)

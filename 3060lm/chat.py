@@ -5,8 +5,10 @@ A conversation is encoded as
     <|endoftext|> <|system|> ... <|im_end|> <|user|> ... <|im_end|> <|assistant|> ... <|im_end|> ...
 and training computes loss only on assistant replies, including the <|im_end|> that ends each one.
 
-Replies can use a calculator with GSM8K's annotation syntax: the model writes "<<48/2=" and generation appends the
-result and ">>" ("24>>"), which training excludes from the loss since the model doesn't produce it.
+Replies can use two tools, whose output training excludes from the loss since the model doesn't produce it:
+- a calculator with GSM8K's annotation syntax: the model writes "<<48/2=" and generation appends "24>>"
+- Python (pytool.py): the model writes a ```python block defining a function, then ">>> solution()" on its own line,
+  and generation runs the block and appends the result line ("6\n")
 
 Usage:
     python chat.py ../training_runs/<name>/final.pt            # chat in the terminal
@@ -27,6 +29,7 @@ from tokenizers import Tokenizer
 import torch
 
 from model import KVCache
+from pytool import PythonTool
 
 ROOT = Path(__file__).parent.parent
 TOKENIZER_PATH = ROOT / "tokenizer/stem32k.json"
@@ -61,18 +64,36 @@ def calculate(expression: str) -> str | None:
     return str(int(result)) if result == int(result) else f"{result:.4f}".rstrip("0")
 
 
+PYTHON_OUTPUT = re.compile(r"```\n>>> [A-Za-z_]\w*\(\)\n([^\n]*\n)")  # the line after a Python call is its output
+python_tool = PythonTool()
+
+
+def python_call(text: str) -> tuple[str, str] | None:
+    """If the text ends with a ```python block followed by ">>> name()", returns (code, name)."""
+    start = text.rfind("```python\n")
+    if start < 0 or not text.endswith("()\n"):
+        return None
+    match = re.fullmatch(r"```python\n(.*)```\n>>> ([A-Za-z_]\w*)\(\)\n", text[start:], re.S)
+    return (match.group(1), match.group(2)) if match else None
+
+
 def segments(text: str) -> list[tuple[str, int]]:
     """
-    Splits a reply into (text, trained) pieces: each calculator result and its ">>" is untrained, since generation
-    inserts it. The result is recomputed, so training sees exactly what the calculator returns.
+    Splits a reply into (text, trained) pieces: tool output is untrained, since generation inserts it. Calculator
+    results are recomputed, so training sees exactly what the calculator returns; Python output is used as written
+    (prepare_sft.py writes it by running the code).
     """
-    pieces, start = [], 0
+    spans = []  # (start, end, untrained replacement)
     for match in re.finditer(r"<<([^<>=]*)=([^<>]*)>>", text):
         result = calculate(match.group(1))
-        if result is None:
-            continue
-        pieces += [(text[start:match.start(2)], 1), (result + ">>", 0)]
-        start = match.end()
+        if result is not None:
+            spans.append((match.start(2), match.end(), result + ">>"))
+    for match in PYTHON_OUTPUT.finditer(text):
+        spans.append((match.start(1), match.end(1), match.group(1)))
+    pieces, start = [], 0
+    for begin, end, output in sorted(spans):
+        pieces += [(text[start:begin], 1), (output, 0)]
+        start = end
     return pieces + [(text[start:], 1)]
 
 
@@ -149,8 +170,9 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
              details: bool = False) -> list:
     """
     Generates a reply of up to max_new_tokens sampled tokens for each prompt, stopping at <|im_end|>. With a
-    tokenizer, calculator calls are answered: when a reply ends with "<<expression=", the result and ">>" are
-    appended, one token per step. With the cache, prompts are prefilled and each step runs only the newest token,
+    tokenizer, tool calls are answered, with the output fed in one token per step: when a reply ends with
+    "<<expression=", the calculator appends the result and ">>", and when it ends with a ```python block and
+    ">>> name()", the Python tool appends the result line. With the cache, prompts are prefilled and each step runs only the newest token,
     as a CUDA graph; cache=False reruns the whole sequence every step instead, which is slow but simple, for checks.
     top_k=0 samples from the full distribution. With details, each reply is a dict with its tokens, which of them
     the model sampled (rather than the calculator), and whether it ended with <|im_end|> (which isn't in tokens).
@@ -213,10 +235,13 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
                 replies[j].append(token)
                 chosen[j].append(int(not was_forced))
                 if tokenizer is not None and not was_forced:
-                    call = CALL.search(tokenizer.decode(replies[j][-48:]))
+                    tail = tokenizer.decode(replies[j][-48:])
+                    call = CALL.search(tail)
                     result = calculate(call.group(1)) if call else None
                     if result is not None:
                         forced[j] = tokenizer.encode(result + ">>").ids
+                    elif tail.endswith("()\n") and (code := python_call(tokenizer.decode(replies[j]))):
+                        forced[j] = tokenizer.encode(python_tool(*code) + "\n").ids
                 if sampled[j] >= max_new_tokens and not forced[j]:
                     active[j] = False
                     continue
@@ -276,7 +301,7 @@ def evaluate_math(model, tokenizer, benchmark: str, limit: int = 0, max_new_toke
         text = tokenizer.decode(reply)
         strict, loose = extract_number(text), last_number(text)
         formatted += strict is not None
-        calls += text.count("<<")
+        calls += text.count("<<") + text.count("\n>>> ")
         ok = strict is not None and math.isclose(float(strict), gold, abs_tol=1e-4)
         correct += ok
         try:

@@ -15,7 +15,8 @@ Chat fine-tuning (SFT, 3.8 hours) took masked val loss from 2.218 to 1.477. The 
 and writes fluent replies, but facts and arithmetic are often wrong, and GSM8K is 0% (1.3% when the last number is
 taken as the answer). A short math stage with calculator calls taught the `#### N` format and tool use, which gives
 GSM8K 1.8% and SVAMP 2.9%, but the model still mostly sets up the wrong calculations. RL (2.5 hours) then raised GSM8K to 3.9% and
-held-out SVAMP to 12.5%, mostly by making replies finish instead of looping.
+held-out SVAMP to 12.5%, mostly by making replies finish instead of looping. SFT on 109M tokens of TinyGSM's Python
+solutions, with a sandboxed Python tool, then reached GSM8K 10.9% and SVAMP 26.6% without RL.
 
 Distilling from SmolLM2-360M or -1.7B loses to direct training at the same 45-minute budget (1.2529 and 1.4247
 vs 1.1883 BPB), because the teacher's forward passes leave the student with 31% and 12% of the tokens.
@@ -101,6 +102,8 @@ python sft.py --name=sft-math --init=../training_runs/sft-704/final.pt --data_di
     --grad_accum=4 --lr=1e-4 --muon_lr=1e-4 --warmup_steps=30   # math stage: GSM8K with calculator calls
 python chat.py ../training_runs/sft-math/final.pt                   # chat in the terminal
 python chat.py ../training_runs/sft-math/final.pt --gsm8k --svamp   # math accuracy, with the calculator
+python prepare_sft.py --out=sft-tinygsm --tinygsm_shards=1 --gsm8k_repeats=0 --smoltalk_groups=20   # TinyGSM, Python tool
+python sft.py --name=sft-tinygsm --init=../training_runs/sft-704/final.pt --data_dir=../data/sft-tinygsm
 python rl.py --name=rl-math --problems=32   # RL on GSM8K train from sft-math, results go to rl_results.jsonl
 ```
 
@@ -124,7 +127,8 @@ python train.py --name=distill-360m <recipe flags without sampled_k> --data_dir=
 ├── evaluate.py       - HellaSwag, PIQA and ARC benchmarks for a checkpoint
 ├── prepare_sft.py    - Tokenize and pack the chat fine-tuning data
 ├── sft.py            - Chat fine-tuning
-├── chat.py           - Chat format, calculator, cached generation, terminal chat and math evals
+├── chat.py           - Chat format, tools, cached generation, terminal chat and math evals
+├── pytool.py         - Restricted Python executor for the Python tool
 └── rl.py             - RL with verifiable rewards on GSM8K
 ```
 

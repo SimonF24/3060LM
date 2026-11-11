@@ -205,6 +205,55 @@ may be flattered, since SmolLM2 trained on FineWeb-Edu and FineMath and may have
 - Our 32k tokenizer beats SmolLM2's 49k one at this budget (1.1759 vs 1.1883): the smaller vocab is faster
   (56.8k vs 47.8k tok/s) and puts fewer parameters in the embedding.
 
+## TinyGSM pilot (`sft-tinygsm`)
+
+SFT from sft-704 on TinyGSM's first shard (GPT-3.5-written Python solutions to synthetic grade-school problems) plus
+20,000 smol-smoltalk conversations as replay: 691k conversations, 109.6M tokens, 1,692 steps, 86.4 min, same settings
+as sft-704. Each solution's docstring (a copy of the question) is removed, the function becomes `solution`, and
+`3060lm/pytool.py` runs it for the answer. The reply is the code block, `>>> solution()`, the tool's output (not
+trained on) and `#### N`. 3.6% of solutions fail to run or don't return a number and are dropped, and 0.15% of
+problems share a 10-word sequence with a GSM8K test or SVAMP problem and are removed. TinyGSM's solutions aren't
+verified, so some are wrong.
+
+| Model | Chat val loss | GSM8K | SVAMP (held out) | `####` GSM8K / SVAMP | Tool calls per reply |
+|---|---:|---:|---:|---:|---:|
+| sft-math | 1.4833 | 1.90% | 3.3% | 63% / 85% | 4.2 calculator |
+| rl-math | | 3.94 ± 0.54% | 12.5 ± 1.05% | 98% / 99% | 1.7 calculator |
+| sft-tinygsm | 1.5316 | **10.92 ± 0.86%** | **26.6 ± 1.4%** | 93% / 99% | 0.94 / 1.0 Python |
+
+- Scale was what sft-math lacked: with about 100x the problems, GSM8K is 5.7x sft-math's and 2.8x rl-math's, and
+  SVAMP, which isn't in TinyGSM's style, is 2.1x rl-math's, without any RL yet.
+- Chat val loss rises 0.055, so the 20k replay conversations don't fully protect general chat.
+- The run's own SVAMP score (3.9%, in sft_results.jsonl) is wrong: the Python tool capped its worker's memory at
+  1GB, but a worker started from a script that imports torch already maps more than that, so calls began failing
+  with SystemError partway through the eval. The cap is now the worker's current size plus 1GB, and the scores above
+  are a rescore with the fixed tool (in benchmarks.jsonl). The training data wasn't affected (96.4% of solutions run
+  with the fix vs 96.3%).
+
+## Profile (after the TinyGSM pilot)
+
+Measured on 16×704, micro-batch 16 × 512 for pretraining and 8 × 1024 for SFT:
+
+| Piece | Time |
+|---|---:|
+| Pretraining micro-batch, full softmax | 345 ms (23.9k tok/s) |
+| Pretraining micro-batch, sampled softmax | 269 ms (30.5k tok/s) |
+| Body only (no output head) | 255 ms |
+| get_batch | 9.7 ms |
+| AdamW step | 13.6 ms |
+| **Muon step** | **162.5 ms** |
+| SFT micro-batch | 357 ms (23.0k tok/s), 80.5% of tokens trained |
+| RL decode step, 64 rows | 7.5 ms (256 cache entries) to 10.1 ms (512); 10.2 ms wall |
+
+- Muon is the largest single target. Its cost is per optimizer step, not per token: about 23% of step time at
+  accumulation 2, 14% at 4 and 6-8% at 8, or about 15% of a run with the current schedule. PyTorch's version already
+  runs Newton-Schulz in bf16 but handles the 96 matrices one at a time, 5 iterations each.
+- The full softmax head and loss add 90 ms per micro-batch (26%), and the sampled version 14 ms. The softmax kernels
+  run on a materialized fp32 copy of the logits, which a fused loss would avoid.
+- RL generation keeps only 33% of its batch busy: replies average 83 tokens, but each 64-row batch runs until its
+  longest reply ends. Python overhead per step is small (10.2 ms wall vs 7.5-10.1 ms of GPU replay).
+- The GPU wasn't throttling: 1,942 of 2,145 MHz, 128 of 170 W, 72°C.
+
 ## Notes
 
 - **00 → 01:** the baseline ran while dataset downloads were using the CPU and disk. Uncompiled runs without
