@@ -11,7 +11,6 @@ Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
        python prepare_sft.py --out=sft-tinygsm --tinygsm_shards=1 --gsm8k_repeats=0 --smoltalk_groups=20
            # TinyGSM's Python solutions (pytool.py runs them), decontaminated against GSM8K test and SVAMP
 """
-import bisect
 import json
 import re
 from multiprocessing import Pool
@@ -118,15 +117,20 @@ def pack(encoded, seed: int) -> tuple[np.ndarray, np.ndarray, dict]:
     kept = [(ids, mask) for ids, mask in encoded if mask.any()]
     width = SEQ_LEN + 1
     order = sorted(np.random.default_rng(seed).permutation(len(kept)), key=lambda i: -len(kept[i][0]))
-    free_space, free_rows = [], []  # sorted by space left, with the matching row index
+    # Rows grouped by exact space left, with a bitmask of which groups are non-empty, so the best fit (the
+    # smallest space that still fits) is one bit operation instead of a search through every row
+    buckets = [[] for _ in range(width + 1)]
+    nonempty = 0
     used = []  # tokens used in each row
     placement = []  # (conversation, row, offset)
     for i in order:
         n = len(kept[i][0])
-        k = bisect.bisect_left(free_space, n)
-        if k < len(free_space):
-            row = free_rows.pop(k)
-            free_space.pop(k)
+        fits = nonempty >> n
+        if fits:
+            space = n + (fits & -fits).bit_length() - 1
+            row = buckets[space].pop()
+            if not buckets[space]:
+                nonempty &= ~(1 << space)
         else:
             row = len(used)
             used.append(0)
@@ -134,9 +138,8 @@ def pack(encoded, seed: int) -> tuple[np.ndarray, np.ndarray, dict]:
         used[row] += n
         left = width - used[row]
         if left > 0:
-            k = bisect.bisect_left(free_space, left)
-            free_space.insert(k, left)
-            free_rows.insert(k, row)
+            buckets[left].append(row)
+            nonempty |= 1 << left
     n_rows = len(used)
     ids_array = np.full((n_rows, width), PAD, dtype=np.uint16)
     mask_array = np.zeros((n_rows, width), dtype=np.uint8)
