@@ -9,6 +9,8 @@ Replies can use two tools, whose output training excludes from the loss since th
 - a calculator with GSM8K's annotation syntax: the model writes "<<48/2=" and generation appends "24>>"
 - Python (pytool.py): the model writes a ```python block defining a function, then ">>> solution()" on its own line,
   and generation runs the block and appends the result line ("6\n")
+- search (search.py): the model writes '>>> search("query")' on its own line, and generation appends the top
+  Wikipedia passages, one line each ("[1] title: text\n")
 
 Usage:
     python chat.py ../training_runs/<name>/final.pt            # chat in the terminal
@@ -64,6 +66,8 @@ def calculate(expression: str) -> str | None:
     return str(int(result)) if result == int(result) else f"{result:.4f}".rstrip("0")
 
 
+SEARCH_CALL = re.compile(r'>>> search\("([^"\n]*)"\)\n$')  # an open search call at the end of the text
+SEARCH_OUTPUT = re.compile(r'>>> search\("[^"\n]*"\)\n((?:\[\d+\] [^\n]*\n|\(no results\)\n)+)')
 PYTHON_OUTPUT = re.compile(r"```\n>>> [A-Za-z_]\w*\(\)\n([^\n]*\n)")  # the line after a Python call is its output
 python_tool = PythonTool()
 
@@ -89,6 +93,8 @@ def segments(text: str) -> list[tuple[str, int]]:
         if result is not None:
             spans.append((match.start(2), match.end(), result + ">>"))
     for match in PYTHON_OUTPUT.finditer(text):
+        spans.append((match.start(1), match.end(1), match.group(1)))
+    for match in SEARCH_OUTPUT.finditer(text):
         spans.append((match.start(1), match.end(1), match.group(1)))
     pieces, start = [], 0
     for begin, end, output in sorted(spans):
@@ -191,6 +197,9 @@ class _Reply:
                 self.forced = tokenizer.encode(result + ">>").ids
             elif tail.endswith("()\n") and (code := python_call(tokenizer.decode(self.tokens))):
                 self.forced = tokenizer.encode(python_tool(*code) + "\n").ids
+            elif tail.endswith('")\n') and (query := SEARCH_CALL.search(tail)):
+                from search import search_tool  # imported here, so chat.py works without the index
+                self.forced = tokenizer.encode(search_tool(query.group(1))).ids
         return self.sampled < max_new_tokens or bool(self.forced)
 
     def output(self, details: bool):

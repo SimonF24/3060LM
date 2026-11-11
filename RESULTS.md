@@ -300,6 +300,33 @@ Measured on 16×704, micro-batch 16 × 512 for pretraining and 8 × 1024 for SFT
   longest reply ends. Python overhead per step is small (10.2 ms wall vs 7.5-10.1 ms of GPU replay).
 - The GPU wasn't throttling: 1,942 of 2,145 MHz, 128 of 170 W, 72°C.
 
+## Search and abstention (setup)
+
+The search tool is BM25 (tantivy, `3060lm/search.py`) over the DPR Wikipedia passages: the December 2018 English
+Wikipedia split into 21,015,324 disjoint 100-word passages (4.7GB download, 13GB index, built in 16 min). Queries
+drop common stopwords, which cuts search time from 0.3-0.5 s to about 0.1 s without hurting recall. The tool
+returns the top 3 passages.
+
+Answer recall (an accepted answer appears in the top k passages, searching with the question; first 1,000 validation
+questions of each):
+
+| | Top-1 | Top-3 | Top-5 | Top-20 |
+|---|---:|---:|---:|---:|
+| TriviaQA (unfiltered) | 37.4% | 49.7% | 54.8% | 66.1% |
+| NQ (open) | 25.0% | 37.7% | 43.9% | 60.4% |
+
+Closed-book baseline: replies to the questions with no search, scored with the RL reward (+1 correct, 0 "I don't
+know", -1 wrong; a reply without `####` counts as wrong). "Lenient" counts any accepted answer appearing anywhere in
+the reply.
+
+| Model | TriviaQA (first 2,000) score | lenient | NQ (3,610) score | lenient |
+|---|---:|---:|---:|---:|
+| sft-704 | -1.000 | 7.3% | -1.000 | 2.9% |
+| rl-tinygsm | -0.999 | 6.2% | -0.999 | 2.4% |
+
+Neither model ever abstains, and nearly every reply is a confident invention ("Jamie Lee Curtis is a space rock",
+"the last time anyone was on the moon was on December 30, 2022").
+
 ## Notes
 
 - **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one

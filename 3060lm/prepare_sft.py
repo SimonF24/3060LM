@@ -10,6 +10,8 @@ Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
            # the math stage: GSM8K with calculator calls, plus 10,000 smol-smoltalk conversations as replay
        python prepare_sft.py --out=sft-tinygsm --tinygsm_shards=1 --gsm8k_repeats=0 --smoltalk_groups=20
            # TinyGSM's Python solutions (pytool.py runs them), decontaminated against GSM8K test and SVAMP
+       python prepare_sft.py --out=sft-qa --qa=1 --gsm8k_repeats=0 --smoltalk_groups=0
+           # search demonstrations for TriviaQA and NQ training questions, from qa.py --demos
 """
 import json
 import re
@@ -23,6 +25,7 @@ from tokenizers import Tokenizer
 
 from chat import PAD, TOKENIZER_PATH, encode_conversation, gsm8k_answer, gsm8k_problems, svamp_problems
 from pytool import execute, limit_memory
+from qa import DEMOS
 
 ROOT = Path(__file__).parent.parent
 RAW = ROOT / "data/raw"
@@ -31,8 +34,10 @@ OUT = ROOT / "data" / ARGS.get("out", "sft")
 SEQ_LEN = int(ARGS.get("seq_len", 1024))
 GSM8K_REPEATS = int(ARGS.get("gsm8k_repeats", 4))  # GSM8K is small, so it's repeated to be a visible share of the mix
 CALCULATOR = ARGS.get("calculator", "0") == "1"  # keep GSM8K's <<48/2=24>> annotations as calculator calls
-SMOLTALK_GROUPS = int(ARGS.get("smoltalk_groups", 0))  # 1,000-row groups of smol-smoltalk to use; 0 uses all
+SMOLTALK_GROUPS = int(ARGS.get("smoltalk_groups", -1))  # 1,000-row groups of smol-smoltalk to use; negative uses all
 TINYGSM_SHARDS = int(ARGS.get("tinygsm_shards", 0))  # TinyGSM parquet files to use, about 700,000 problems each
+QA = ARGS.get("qa", "0") == "1"  # search demonstrations for TriviaQA's and NQ's training questions
+QA_CHUNK = 2_000  # questions per job
 VAL_CONVERSATIONS = 2_000
 NGRAM = 10  # a training problem sharing this many consecutive words with a benchmark problem is dropped
 
@@ -72,6 +77,11 @@ def load_conversations(source: str, part: int) -> list[list[dict]]:
     One part of a source: a 1,000-row group of a smol-smoltalk file, or all of GSM8K's train split.
     Workers load their own parts, so no process holds all the text at once.
     """
+    if source.startswith("qa/"):
+        with open(DEMOS / f"demos_{source.removeprefix('qa/')}.jsonl") as f:  # written by qa.py --demos
+            lines = [line for i, line in enumerate(f) if part * QA_CHUNK <= i < (part + 1) * QA_CHUNK]
+        return [[{"role": "user", "content": d["question"]}, {"role": "assistant", "content": d["reply"]}]
+                for d in map(json.loads, lines)]
     if source.startswith("tinygsm/"):
         rows = pq.ParquetFile(RAW / "tinygsm/data" / source.removeprefix("tinygsm/")).read_row_group(part).to_pylist()
         conversations = []
@@ -104,9 +114,15 @@ def _encode(job):
 
 
 def encode_all(jobs: list[tuple[str, int]]) -> list[tuple[np.ndarray, np.ndarray]]:
-    # Workers run TinyGSM's code, so their memory is capped (pytool.execute sets the time limit)
-    with Pool(6, initializer=limit_memory, initargs=(2 << 30,), maxtasksperchild=20) as pool:
-        return [c for batch in pool.imap(_encode, jobs) for c in batch]
+    # Workers that run TinyGSM's code have their memory capped (pytool.execute sets the time limit)
+    capped = [j for j in jobs if j[0].startswith("tinygsm/")]
+    other = [j for j in jobs if not j[0].startswith("tinygsm/")]
+    encoded = []
+    for group, init, args in [(capped, limit_memory, (2 << 30,)), (other, None, ())]:
+        if group:
+            with Pool(6, initializer=init, initargs=args, maxtasksperchild=20) as pool:
+                encoded += [c for batch in pool.imap(_encode, group) for c in batch]
+    return encoded
 
 
 def pack(encoded, seed: int) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -158,16 +174,21 @@ def main():
     train_jobs = []
     for f in sorted((RAW / "smol-smoltalk/data").glob("train-*.parquet")):
         train_jobs += [(f.name, g) for g in range(pq.ParquetFile(f).num_row_groups)]
-    if SMOLTALK_GROUPS:
+    if SMOLTALK_GROUPS >= 0:
         train_jobs = train_jobs[:SMOLTALK_GROUPS]
     train_jobs += [("gsm8k", 0)] * GSM8K_REPEATS
+    if QA:
+        for name in ["triviaqa", "nq"]:
+            n = pq.ParquetFile(ROOT / "data/raw" / ("triviaqa/unfiltered.nocontext" if name == "triviaqa" else "nq_open/nq_open")
+                               / "train-00000-of-00001.parquet").metadata.num_rows
+            train_jobs += [(f"qa/{name}", part) for part in range(-(-n // QA_CHUNK))]
     for f in sorted((RAW / "tinygsm/data").glob("train-*.parquet"))[:TINYGSM_SHARDS]:
         train_jobs += [(f"tinygsm/{f.name}", g) for g in range(pq.ParquetFile(f).num_row_groups)]
     val_jobs = [("test-00000-of-00001.parquet", g) for g in range(VAL_CONVERSATIONS // 1000)]
     print(f"{len(train_jobs)} train jobs, GSM8K x {GSM8K_REPEATS}, val {VAL_CONVERSATIONS:,}", flush=True)
 
     meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS, "calculator": CALCULATOR,
-            "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS}
+            "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS, "qa": QA}
     for split, jobs in [("train", train_jobs), ("val", val_jobs)]:
         ids, mask, stats = pack(encode_all(jobs), seed=0)
         np.save(OUT / f"{split}_ids.npy", ids)

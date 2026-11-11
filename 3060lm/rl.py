@@ -1,17 +1,21 @@
 """
-RL with verifiable rewards on GSM8K's training split: on-policy policy gradient with group baselines (GRPO-style).
+RL with verifiable rewards: on-policy policy gradient with group baselines (GRPO-style), on math (GSM8K's training
+split), open-domain QA with search (TriviaQA's and NQ's training splits, qa.py), or a mix.
 
-Each step samples `group` replies to each of `problems` training problems, with the calculator, at temperature 1 from
-the full distribution. A reply's reward is 1 if it ends with '#### <correct answer>' and 0 otherwise, and its
-advantage is its reward minus its group's mean, so groups where every reply scored the same give no signal. The loss
+Each step samples `group` replies to each of `problems` training problems, with the tools, at temperature 1 from
+the full distribution. A math reply's reward is 1 if it ends with '#### <correct answer>' and 0 otherwise. A QA
+reply's is qa.REWARDS: +1 correct, 0 for '#### I don't know' and -1 wrong, so it pays to answer only when the model
+is more likely right than wrong. A reply's advantage is its reward minus its group's mean, so groups where every reply
+scored the same give no signal. The loss
 raises the log-probability of the tokens in better-than-average replies and lowers it in worse ones. Only tokens the
 model sampled are trained (plus <|im_end|> when it chose to stop); the prompt and calculator results aren't. One
 gradient step per batch keeps it on-policy, so there's no importance ratio or clipping.
 
-Held-out GSM8K test and SVAMP problems are scored greedily every eval_every steps, and in full at the end, appended to
-rl_results.jsonl.
+Held-out problems (GSM8K test and SVAMP for math, TriviaQA and NQ validation for QA) are scored greedily every
+eval_every steps, and in full at the end, appended to rl_results.jsonl.
 
 Usage: python rl.py --name=rl-math [--init=../training_runs/sft-math/final.pt] [--any_config_field=value ...]
+       python rl.py --name=rl-qa --tasks=math,qa --qa_fraction=0.5   # half of each step's problems are QA
        python rl.py --name=rl-math --resume=true   # continues from training_runs/rl-math/latest.pt
 """
 from dataclasses import asdict, dataclass
@@ -29,6 +33,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from chat import END, GSM8K_DIR, PAD, TOKENIZER_PATH, evaluate_math, extract_number, generate, prompt_ids
 from model import Transformer, TransformerConfig
+from qa import REWARDS, evaluate_qa, grade, load_questions
 from train import build_optimizers, parse_args
 
 ROOT = Path(__file__).parent.parent
@@ -38,6 +43,8 @@ ROOT = Path(__file__).parent.parent
 class RLConfig:
     name: str = "rl"
     init: str = str(ROOT / "training_runs/sft-math/final.pt")
+    tasks: str = "math"  # "math", "qa", or "math,qa"
+    qa_fraction: float = 0.5  # with both tasks, the share of each step's problems that are QA
     steps: int = 300
     problems: int = 16  # training problems per step
     group: int = 16  # replies sampled per problem
@@ -66,6 +73,17 @@ def train_problems() -> list[tuple[str, float]]:
 def reward(reply_text: str, gold: float) -> float:
     answer = extract_number(reply_text)
     return float(answer is not None and math.isclose(float(answer), gold, abs_tol=1e-4))
+
+
+def task_problems(task: str) -> list[tuple[str, object]]:
+    """(question, answer) pairs: a number for math, a list of accepted answers for QA."""
+    if task == "math":
+        return train_problems()
+    return load_questions("triviaqa", "train") + load_questions("nq", "train")
+
+
+def task_reward(task: str, reply_text: str, answer) -> float:
+    return reward(reply_text, answer) if task == "math" else REWARDS[grade(reply_text, answer)]
 
 
 def policy_loss(model, batch: list[tuple[list[int], list[int], float]], n_tokens: int) -> torch.Tensor:
@@ -100,22 +118,35 @@ def main():
     print(f"{cfg.name}: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters from {cfg.init}")
     optimizers = build_optimizers(model, cfg)
 
-    problems = train_problems()
+    tasks = cfg.tasks.split(",")
+    per_step = {"qa": round(cfg.problems * cfg.qa_fraction)} if len(tasks) > 1 else {tasks[0]: cfg.problems}
+    if len(tasks) > 1:
+        per_step["math"] = cfg.problems - per_step["qa"]
+    pools, orders = {}, {}
     rng = np.random.default_rng(cfg.seed)
-    epochs = math.ceil(cfg.steps * cfg.problems / len(problems))
-    order = np.concatenate([rng.permutation(len(problems)) for _ in range(epochs)])
-    print(f"{len(problems):,} training problems, {cfg.steps} steps of {cfg.problems} x {cfg.group} replies "
-          f"({cfg.steps * cfg.problems / len(problems):.2f} epochs)", flush=True)
+    for task in tasks:
+        pools[task] = task_problems(task)
+        epochs = math.ceil(cfg.steps * per_step[task] / len(pools[task]))
+        orders[task] = np.concatenate([rng.permutation(len(pools[task])) for _ in range(epochs)])
+        print(f"{task}: {len(pools[task]):,} training problems, {per_step[task]} per step "
+              f"({cfg.steps * per_step[task] / len(pools[task]):.2f} epochs)", flush=True)
 
     def evaluate(step: int, limit: int) -> dict:
         model.eval()
         scores = {}
-        for benchmark in ["gsm8k", "svamp"]:
-            result = evaluate_math(model, tokenizer, benchmark, limit=limit)
-            scores[benchmark] = {k: v for k, v in result.items() if k != "examples"}
-            writer.add_scalar(f"eval/{benchmark}", result["accuracy"], step)
+        if "math" in tasks:
+            for benchmark in ["gsm8k", "svamp"]:
+                result = evaluate_math(model, tokenizer, benchmark, limit=limit)
+                scores[benchmark] = {k: v for k, v in result.items() if k != "examples"}
+                writer.add_scalar(f"eval/{benchmark}", result["accuracy"], step)
+        if "qa" in tasks:
+            for benchmark in ["triviaqa", "nq"]:
+                result = evaluate_qa(model, tokenizer, benchmark, limit=limit)
+                scores[benchmark] = {k: v for k, v in result.items() if k != "examples"}
+                writer.add_scalar(f"eval/{benchmark}", result["score"], step)
         print(f"step {step} | eval (first {limit or 'all'}) | " + " | ".join(
-            f"{b} {s['accuracy']:.2%} (lenient {s['lenient']:.2%}, formatted {s['formatted']:.0%})"
+            f"{b} {s['accuracy']:.2%} (formatted {s['formatted']:.0%})" if "accuracy" in s else
+            f"{b} score {s['score']:+.3f} (correct {s['correct']:.1%}, abstain {s['abstain']:.1%}, wrong {s['wrong']:.1%})"
             for b, s in scores.items()), flush=True)
         return scores
 
@@ -142,14 +173,15 @@ def main():
             for group in optimizer.param_groups:
                 group["lr"] = base_lr * lr_scale
         t0 = time.perf_counter()
-        batch = [problems[i] for i in order[step * cfg.problems:(step + 1) * cfg.problems]]
-        prompts = [prompt_ids(tokenizer, [{"role": "user", "content": q}]) for q, _ in batch for _ in range(cfg.group)]
+        batch = [(task, *pools[task][i]) for task in tasks
+                 for i in orders[task][step * per_step[task]:(step + 1) * per_step[task]]]
+        prompts = [prompt_ids(tokenizer, [{"role": "user", "content": q}]) for _, q, _ in batch for _ in range(cfg.group)]
         model.eval()
         replies = generate(model, prompts, cfg.max_new_tokens, temperature=cfg.temperature, top_k=0,
                            batch_size=cfg.gen_batch, tokenizer=tokenizer, details=True)
         t_gen = time.perf_counter() - t0
 
-        rewards = torch.tensor([reward(tokenizer.decode(r["tokens"]), batch[i // cfg.group][1])
+        rewards = torch.tensor([task_reward(batch[i // cfg.group][0], tokenizer.decode(r["tokens"]), batch[i // cfg.group][2])
                                 for i, r in enumerate(replies)]).view(cfg.problems, cfg.group)
         advantages = (rewards - rewards.mean(1, keepdim=True)).flatten().tolist()
         sequences = []
@@ -174,6 +206,8 @@ def main():
         for optimizer, _ in optimizers:
             optimizer.zero_grad(set_to_none=True)
 
+        task_rewards = " ".join(f"{task} {rewards[[i for i, b in enumerate(batch) if b[0] == task]].mean().item():+.3f}"
+                                for task in tasks)
         mean_reward = rewards.mean().item()
         signal = int((rewards.std(1) > 0).sum())
         lengths = [len(r["tokens"]) for r in replies]
@@ -182,7 +216,7 @@ def main():
         writer.add_scalar("train/reward", mean_reward, step + 1)
         writer.add_scalar("train/groups_with_signal", signal, step + 1)
         writer.add_scalar("train/reply_tokens", sum(lengths) / len(lengths), step + 1)
-        print(f"step {step + 1}/{cfg.steps} | reward {mean_reward:.3f} | groups with signal {signal}/{cfg.problems} | "
+        print(f"step {step + 1}/{cfg.steps} | reward {task_rewards} | groups with signal {signal}/{cfg.problems} | "
               f"tokens {sum(lengths) / len(lengths):.0f} | calls {calls:.1f} | ended {sum(r['ended'] for r in replies) / len(replies):.0%} | "
               f"loss {loss_sum:+.4f} | gen {t_gen:.0f}s train {time.perf_counter() - t0 - t_gen:.0f}s | "
               f"{(time.perf_counter() - t_start) / 60:.1f} min", flush=True)
