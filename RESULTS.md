@@ -254,6 +254,28 @@ Periodic evals (first 400 problems of each, greedy):
   training split, in GSM8K's style).
 - Replies stay short (72-87 tokens) with exactly one Python call each.
 
+### Cost to general chat
+
+Masked loss on 2,000 held-out smol-smoltalk conversations, and the log-probability benchmarks from `evaluate.py`
+(standard errors about 0.45% HellaSwag, 1.1% PIQA, 1.0% ARC-Easy, 1.2% ARC-Challenge):
+
+| Model | Chat val loss | HellaSwag | PIQA | ARC-Easy | ARC-Challenge |
+|---|---:|---:|---:|---:|---:|
+| long-704 (base) | | 28.62% | 62.13% | 51.09% | 21.25% |
+| sft-704 | 1.4769 | 29.02% | 61.26% | 47.35% | 22.44% |
+| sft-math | 1.4833 | 29.06% | 61.59% | 47.39% | 22.61% |
+| rl-math | 1.5492 | 29.12% | 61.32% | 45.58% | 22.95% |
+| sft-tinygsm | 1.5316 | 29.02% | 60.72% | 44.74% | 22.18% |
+| rl-tinygsm | 1.5958 | 29.08% | 60.17% | 45.20% | 22.53% |
+
+- Chat val loss rises 0.119 from sft-704 to rl-tinygsm (8%): 0.055 from TinyGSM SFT and 0.064 from RL. Each RL run
+  adds about 0.065, because RL narrows the model's distribution toward its math replies.
+- The benchmarks barely move: HellaSwag and ARC-Challenge are flat, PIQA drops about 1 point (within error) and
+  ARC-Easy 2-2.6 points (about 2 standard errors). Chat SFT itself cost more ARC-Easy (51.1% to 47.4%).
+- Sampled replies to six general questions (capital of France, study tips, black holes, a poem, viruses vs
+  bacteria, reversing a list) read about the same before and after: fluent, with the same kind of factual errors,
+  and no Python where it doesn't belong.
+
 ## Profile (after the TinyGSM pilot)
 
 Measured on 16×704, micro-batch 16 × 512 for pretraining and 8 × 1024 for SFT:
