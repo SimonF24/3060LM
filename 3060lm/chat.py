@@ -139,6 +139,7 @@ def gsm8k_answer(solution: str, calculator: bool = False) -> str:
 
 
 BUCKET = 128  # decode graphs attend to a multiple of this many cache entries
+FEED_CHUNK = 8  # tool output at least this long is fed in one forward pass instead of one token per step
 
 
 def decode_graphs(model, batch_size: int) -> tuple:
@@ -287,13 +288,16 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
         next_ids = _sample(logits, temperature, top_k)
         # Empty slots feed padding at the last cache position, which no sequence reaches, so it's never read
         fed, fed_positions = [PAD] * batch_size, [max_len - 1] * batch_size
-        decoding = []
+        decoding, chunked = [], []
         for j, r in enumerate(slots):
             if r is None:
                 continue
             if r.advance(next_ids[j], max_new_tokens, max_len, tokenizer):
-                fed[j], fed_positions[j] = r.seq[-1], len(r.seq) - 1
-                decoding.append(j)
+                if len(r.forced) >= FEED_CHUNK and len(r.seq) + len(r.forced) < max_len - 1:
+                    chunked.append(j)
+                else:
+                    fed[j], fed_positions[j] = r.seq[-1], len(r.seq) - 1
+                    decoding.append(j)
             else:
                 outputs[r.index] = r.output(details)
                 slots[j] = None
@@ -304,6 +308,26 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
             position_buffer.copy_(torch.tensor(fed_positions)[:, None])
             graph.replay()
             logits = graph_logits[:, -1].float()
+        for j in chunked:
+            # Long tool output (search results): feed the last sampled token and the whole output in one pass,
+            # through a single-row view of the cache, instead of hundreds of one-token steps
+            r = slots[j]
+            start = len(r.seq) - 1  # the last sampled token isn't in the cache yet
+            r.seq += r.forced
+            r.tokens += r.forced
+            r.chosen += [0] * len(r.forced)
+            r.forced = []
+            if r.sampled >= max_new_tokens:
+                outputs[r.index] = r.output(details)
+                slots[j] = None
+                continue
+            x = torch.tensor([r.seq[start:]], device="cuda")
+            row = KVCache([k[j:j + 1] for k in kv.keys], [v[j:j + 1] for v in kv.values])
+            positions = torch.arange(start, len(r.seq), device="cuda")[None]
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                out = model(x, cache=row, positions=positions, select=torch.tensor([x.size(1) - 1], device="cuda"),
+                            used=len(r.seq))
+            logits[j] = out[0, 0].float()
         free = [j for j, r in enumerate(slots) if r is None]
         if queue and free and (len(free) >= max(1, batch_size // 4) or not decoding):
             refill(free)

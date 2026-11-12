@@ -6,6 +6,7 @@ Usage: python search.py --build              # indexes data/raw/wiki_dpr/psgs_w1
        python search.py "who wrote pride and prejudice"
 """
 import csv
+import functools
 import gzip
 from pathlib import Path
 import re
@@ -81,6 +82,7 @@ def format_results(results: list[tuple[str, str, float]]) -> str:
 
 
 _searcher = None
+@functools.lru_cache(maxsize=100_000)  # RL samples many replies per question, which mostly send the same query
 def search_tool(query: str) -> str:
     global _searcher
     if _searcher is None:

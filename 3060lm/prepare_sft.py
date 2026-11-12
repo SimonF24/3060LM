@@ -10,8 +10,9 @@ Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
            # the math stage: GSM8K with calculator calls, plus 10,000 smol-smoltalk conversations as replay
        python prepare_sft.py --out=sft-tinygsm --tinygsm_shards=1 --gsm8k_repeats=0 --smoltalk_groups=20
            # TinyGSM's Python solutions (pytool.py runs them), decontaminated against GSM8K test and SVAMP
-       python prepare_sft.py --out=sft-qa --qa=1 --gsm8k_repeats=0 --smoltalk_groups=0
-           # search demonstrations for TriviaQA and NQ training questions, from qa.py --demos
+       python prepare_sft.py --out=sft-search --qa=1 --qa_chunks=10 --tinygsm_shards=1 --tinygsm_groups=100 \
+           --gsm8k_repeats=0 --smoltalk_groups=20
+           # search stage: 40k search demonstrations (from qa.py --demos) with TinyGSM and chat replay
 """
 import json
 import re
@@ -38,6 +39,8 @@ SMOLTALK_GROUPS = int(ARGS.get("smoltalk_groups", -1))  # 1,000-row groups of sm
 TINYGSM_SHARDS = int(ARGS.get("tinygsm_shards", 0))  # TinyGSM parquet files to use, about 700,000 problems each
 QA = ARGS.get("qa", "0") == "1"  # search demonstrations for TriviaQA's and NQ's training questions
 QA_CHUNK = 2_000  # questions per job
+QA_CHUNKS = int(ARGS.get("qa_chunks", -1))  # QA_CHUNK-question chunks per dataset to use; negative uses all
+TINYGSM_GROUPS = int(ARGS.get("tinygsm_groups", -1))  # 1,000-problem row groups per TinyGSM shard; negative uses all
 VAL_CONVERSATIONS = 2_000
 NGRAM = 10  # a training problem sharing this many consecutive words with a benchmark problem is dropped
 
@@ -181,14 +184,17 @@ def main():
         for name in ["triviaqa", "nq"]:
             n = pq.ParquetFile(ROOT / "data/raw" / ("triviaqa/unfiltered.nocontext" if name == "triviaqa" else "nq_open/nq_open")
                                / "train-00000-of-00001.parquet").metadata.num_rows
-            train_jobs += [(f"qa/{name}", part) for part in range(-(-n // QA_CHUNK))]
+            parts = range(-(-n // QA_CHUNK))
+            train_jobs += [(f"qa/{name}", part) for part in (parts[:QA_CHUNKS] if QA_CHUNKS >= 0 else parts)]
     for f in sorted((RAW / "tinygsm/data").glob("train-*.parquet"))[:TINYGSM_SHARDS]:
-        train_jobs += [(f"tinygsm/{f.name}", g) for g in range(pq.ParquetFile(f).num_row_groups)]
+        groups = range(pq.ParquetFile(f).num_row_groups)
+        train_jobs += [(f"tinygsm/{f.name}", g) for g in (groups[:TINYGSM_GROUPS] if TINYGSM_GROUPS >= 0 else groups)]
     val_jobs = [("test-00000-of-00001.parquet", g) for g in range(VAL_CONVERSATIONS // 1000)]
     print(f"{len(train_jobs)} train jobs, GSM8K x {GSM8K_REPEATS}, val {VAL_CONVERSATIONS:,}", flush=True)
 
     meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS, "calculator": CALCULATOR,
-            "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS, "qa": QA}
+            "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS, "tinygsm_groups": TINYGSM_GROUPS,
+            "qa": QA, "qa_chunks": QA_CHUNKS}
     for split, jobs in [("train", train_jobs), ("val", val_jobs)]:
         ids, mask, stats = pack(encode_all(jobs), seed=0)
         np.save(OUT / f"{split}_ids.npy", ids)

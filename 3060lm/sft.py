@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from chat import TOKENIZER_PATH, evaluate_math
+from qa import evaluate_qa
 from model import Transformer, TransformerConfig
 from train import build_optimizers, parse_args
 
@@ -47,7 +48,7 @@ class SFTConfig:
     compile: bool = True
     log_every: int = 50
     eval_every: int = 1000  # steps between val loss evals
-    benchmarks: str = "gsm8k,svamp"  # scored at the end, with the calculator available
+    benchmarks: str = "gsm8k,svamp"  # scored at the end, with the tools; triviaqa and nq are qa.py's QA evals
     benchmark_limit: int = 0  # problems per benchmark; 0 scores them all
     ckpt_every_min: float = 30.0  # saves training_runs/<name>/latest.pt this often
     resume: bool = False  # continue from training_runs/<name>/latest.pt
@@ -172,7 +173,10 @@ def main():
               "val_loss": round(final_val, 4)}
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
     for benchmark in filter(None, cfg.benchmarks.split(",")):
-        scores = evaluate_math(model, tokenizer, benchmark, limit=cfg.benchmark_limit)
+        if benchmark in ("triviaqa", "nq"):
+            scores = evaluate_qa(model, tokenizer, benchmark, limit=cfg.benchmark_limit or (2000 if benchmark == "triviaqa" else 0))
+        else:
+            scores = evaluate_math(model, tokenizer, benchmark, limit=cfg.benchmark_limit)
         print(benchmark, json.dumps(scores, indent=2), flush=True)
         result[benchmark] = {k: v for k, v in scores.items() if k != "examples"}
     result.update({"steps": total_steps, "train_min": round(train_min, 1), "eval_s": round(time.perf_counter() - t0),

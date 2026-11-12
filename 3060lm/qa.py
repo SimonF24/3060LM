@@ -118,9 +118,11 @@ def evaluate_qa(model, tokenizer, name: str, limit: int = 2000, max_new_tokens: 
     outcomes = [grade(r, answers) for r, (_, answers) in zip(replies, questions)]
     n = len(questions)
     rates = {k: outcomes.count(k) / n for k in REWARDS}
-    # Lenient: an accepted answer appears anywhere in the reply, for models that don't use the #### format
+    # Lenient: an accepted answer appears anywhere in the model's own text (not the search results), for models
+    # that don't use the #### format
+    own = [re.sub(r"^(\[\d+\] .*|\(no results\))$", "", r, flags=re.M) for r in replies]
     lenient = sum(any(normalize(a) and f" {normalize(a)} " in f" {normalize(r)} " for a in answers)
-                  for r, (_, answers) in zip(replies, questions)) / n
+                  for r, (_, answers) in zip(own, questions)) / n
     return {"score": round(sum(REWARDS[o] for o in outcomes) / n, 4),
             **{k: round(v, 4) for k, v in rates.items()}, "lenient": round(lenient, 4),
             "searched": round(sum('>>> search("' in r for r in replies) / n, 4), "n": n,

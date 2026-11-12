@@ -60,7 +60,8 @@ class RLConfig:
     micro_batch: int = 8  # sequences per forward/backward pass
     gen_batch: int = 64  # sequences per generation batch
     eval_every: int = 50
-    eval_limit: int = 400  # problems per benchmark in the periodic evals; the final eval scores all of them
+    eval_limit: int = 400  # problems per benchmark in the periodic evals
+    final_eval_limit: int = 0  # problems per benchmark in the final eval; 0 scores them all
     resume: bool = False  # continue from training_runs/<name>/latest.pt
     seed: int = 1337
 
@@ -208,6 +209,10 @@ def main():
 
         task_rewards = " ".join(f"{task} {rewards[[i for i, b in enumerate(batch) if b[0] == task]].mean().item():+.3f}"
                                 for task in tasks)
+        if "qa" in tasks:  # QA rewards are 1, 0, -1 for correct, abstain, wrong
+            qa = rewards[[i for i, b in enumerate(batch) if b[0] == "qa"]].flatten()
+            task_rewards += (f" (correct {(qa > 0.5).float().mean():.0%} abstain {(qa.abs() < 0.5).float().mean():.0%}"
+                             f" wrong {(qa < -0.5).float().mean():.0%})")
         mean_reward = rewards.mean().item()
         signal = int((rewards.std(1) > 0).sum())
         lengths = [len(r["tokens"]) for r in replies]
@@ -233,7 +238,7 @@ def main():
     torch.save({"model": model.state_dict(), "model_config": asdict(model_cfg), "config": asdict(cfg)},
                run_dir / "final.pt")
     t0 = time.perf_counter()
-    final = evaluate(cfg.steps, 0)
+    final = evaluate(cfg.steps, cfg.final_eval_limit)
     result = {"name": cfg.name, "init": cfg.init, **final, "history": history, "steps": cfg.steps,
               "train_min": round(train_min, 1), "eval_s": round(time.perf_counter() - t0),
               "peak_mem_GB": round(torch.cuda.max_memory_allocated() / 1e9, 2), "config": asdict(cfg)}
