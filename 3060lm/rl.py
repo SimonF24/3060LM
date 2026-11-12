@@ -18,7 +18,7 @@ Usage: python rl.py --name=rl-math [--init=../training_runs/sft-math/final.pt] [
        python rl.py --name=rl-qa --tasks=math,qa --qa_fraction=0.5   # half of each step's problems are QA
        python rl.py --name=rl-math --resume=true   # continues from training_runs/rl-math/latest.pt
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import math
 from pathlib import Path
@@ -34,7 +34,7 @@ from torch.utils.tensorboard import SummaryWriter
 from chat import END, GSM8K_DIR, PAD, TOKENIZER_PATH, evaluate_math, extract_number, generate, prompt_ids
 from model import Transformer, TransformerConfig
 from qa import REWARDS, evaluate_qa, grade, load_questions
-from train import build_optimizers, parse_args
+from train import build_optimizers, parse_args, stage_value
 
 ROOT = Path(__file__).parent.parent
 
@@ -45,6 +45,10 @@ class RLConfig:
     init: str = str(ROOT / "training_runs/sft-math/final.pt")
     tasks: str = "math"  # "math", "qa", or "math,qa"
     qa_fraction: float = 0.5  # with both tasks, the share of each step's problems that are QA
+    # The QA reward for a wrong answer by stage, as [[fraction of steps, reward], ...]. A curriculum such as
+    # [[0, 0.0], [0.6, -1.0]] lets the model learn to find answers before wrong ones are penalized; evals always use
+    # qa.REWARDS (+1 / 0 / -1)
+    qa_wrong_schedule: list = field(default_factory=lambda: [[0, -1.0]])
     steps: int = 300
     problems: int = 16  # training problems per step
     group: int = 16  # replies sampled per problem
@@ -83,8 +87,11 @@ def task_problems(task: str) -> list[tuple[str, object]]:
     return load_questions("triviaqa", "train") + load_questions("nq", "train")
 
 
-def task_reward(task: str, reply_text: str, answer) -> float:
-    return reward(reply_text, answer) if task == "math" else REWARDS[grade(reply_text, answer)]
+def task_reward(task: str, reply_text: str, answer, qa_wrong: float = REWARDS["wrong"]) -> float:
+    if task == "math":
+        return reward(reply_text, answer)
+    outcome = grade(reply_text, answer)
+    return qa_wrong if outcome == "wrong" else REWARDS[outcome]
 
 
 def policy_loss(model, batch: list[tuple[list[int], list[int], float]], n_tokens: int) -> torch.Tensor:
@@ -182,8 +189,9 @@ def main():
                            batch_size=cfg.gen_batch, tokenizer=tokenizer, details=True)
         t_gen = time.perf_counter() - t0
 
-        rewards = torch.tensor([task_reward(batch[i // cfg.group][0], tokenizer.decode(r["tokens"]), batch[i // cfg.group][2])
-                                for i, r in enumerate(replies)]).view(cfg.problems, cfg.group)
+        qa_wrong = stage_value(cfg.qa_wrong_schedule, step / cfg.steps, REWARDS["wrong"])
+        rewards = torch.tensor([task_reward(batch[i // cfg.group][0], tokenizer.decode(r["tokens"]), batch[i // cfg.group][2],
+                                            qa_wrong) for i, r in enumerate(replies)]).view(cfg.problems, cfg.group)
         advantages = (rewards - rewards.mean(1, keepdim=True)).flatten().tolist()
         sequences = []
         for prompt, reply, advantage in zip(prompts, replies, advantages):
@@ -209,10 +217,12 @@ def main():
 
         task_rewards = " ".join(f"{task} {rewards[[i for i, b in enumerate(batch) if b[0] == task]].mean().item():+.3f}"
                                 for task in tasks)
-        if "qa" in tasks:  # QA rewards are 1, 0, -1 for correct, abstain, wrong
-            qa = rewards[[i for i, b in enumerate(batch) if b[0] == "qa"]].flatten()
-            task_rewards += (f" (correct {(qa > 0.5).float().mean():.0%} abstain {(qa.abs() < 0.5).float().mean():.0%}"
-                             f" wrong {(qa < -0.5).float().mean():.0%})")
+        if "qa" in tasks:
+            outcomes = [grade(tokenizer.decode(r["tokens"]), batch[i // cfg.group][2]) for i, r in enumerate(replies)
+                        if batch[i // cfg.group][0] == "qa"]
+            task_rewards += (f" (correct {outcomes.count('correct') / len(outcomes):.0%} abstain "
+                             f"{outcomes.count('abstain') / len(outcomes):.0%} wrong {outcomes.count('wrong') / len(outcomes):.0%},"
+                             f" wrong reward {qa_wrong:+g})")
         mean_reward = rewards.mean().item()
         signal = int((rewards.std(1) > 0).sum())
         lengths = [len(r["tokens"]) for r in replies]

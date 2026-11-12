@@ -35,6 +35,11 @@ held-out SVAMP to 12.5%, mostly by making replies finish instead of looping. SFT
 solutions, with a sandboxed Python tool, then reached GSM8K 10.9% and SVAMP 26.6% without RL, and RL
 from there reached GSM8K 16.6% and SVAMP 29.5%.
 
+A search and abstention stage (BM25 over 21M Wikipedia passages, then RL rewarding correct answers, penalizing wrong
+ones and giving 0 for "I don't know") cut confident wrong answers on TriviaQA from about 100% to 1.8%, but only by
+abstaining on nearly everything: at 101M parameters the model finds the answer in its retrieved passages only about
+9% of the time, so it never becomes worth answering. Math kept improving alongside it (SVAMP 51.6%).
+
 Distilling from SmolLM2-360M or -1.7B loses to direct training at the same 45-minute budget (1.2529 and 1.4247
 vs 1.1883 BPB), because the teacher's forward passes leave the student with 31% and 12% of the tokens.
 

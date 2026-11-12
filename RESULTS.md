@@ -365,7 +365,43 @@ the reply.
 Neither model ever abstains, and nearly every reply is a confident invention ("Jamie Lee Curtis is a space rock",
 "the last time anyone was on the moon was on December 30, 2022").
 
-## Notes
+## Search and abstention (results)
+
+**Search SFT (`sft-search`):** from rl-tinygsm8 on 47.0M tokens: 40k search demonstrations (20k TriviaQA, 20k NQ
+training questions), 100k TinyGSM problems and 20k smol-smoltalk conversations as replay. 721 steps at LR 1e-4,
+35.6 min. The model searches for 98-99% of questions but abstains 87-88% of the time, about equally whether the
+answer is in the retrieved passages (88% of 181 questions) or not (86% of 219): it learned abstention as a default,
+not from reading the passages. TriviaQA score -0.089 (2.0% correct, 10.8% wrong), NQ -0.101. GSM8K 31.8%, SVAMP
+48.8%, chat val loss 1.524.
+
+**Mixed RL with +1 / 0 / -1 (`rl-mixed`, stopped):** half GSM8K and half TriviaQA/NQ problems per step. The QA
+samples went from 45% abstaining to 100% within 19 steps, with correct answers at 0-7%, after which the QA groups
+carried no signal. Stopped at step 25 (17 min, development compute).
+
+**Curriculum RL (`rl-curriculum`):** from sft-search, wrong QA answers rewarded 0 for the first 60% of 380 steps,
+then -1. Evals score +1 / 0 / -1 throughout. 201.1 min (3.4 h), 14.8GB peak (past the card's 12GB, so it spilled
+into system memory).
+
+| Step | Wrong reward | TriviaQA correct | abstain | wrong | score | NQ score | GSM8K | SVAMP |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | | 1.2% | 87.0% | 11.8% | -0.105 | -0.092 | 34.00% | 44.00% |
+| 100 | 0 | 8.0% | 6.8% | 85.2% | -0.772 | -0.848 | 36.75% | 43.25% |
+| 200 | 0 | 8.8% | 1.0% | 90.2% | -0.815 | -0.917 | 35.50% | 46.25% |
+| 250 | -1 | 6.2% | 40.8% | 53.0% | -0.468 | -0.507 | 36.00% | 45.50% |
+| 300 | -1 | 0.0% | 99.5% | 0.5% | -0.005 | 0.000 | 38.00% | 48.25% |
+| 380 (full sets) | -1 | 0.0% | 98.2% | 1.8% | -0.018 | -0.001 | 33.59% | **51.60%** |
+
+(Steps 0-300 are the first 400 questions of each benchmark; the last row is all of them: TriviaQA 11,313, NQ 3,610,
+GSM8K 1,319, SVAMP 1,000.)
+
+- The bottleneck is reading, not the reward. Even when wrong answers cost nothing and the model answered nearly
+  every question, only about 9% of its answers were right, although about half of TriviaQA questions have an
+  accepted answer in the top 3 passages. Under +1 / 0 / -1, answering pays only above 50% confidence, so always
+  abstaining is the best policy this model can reach, and RL found it within about 20 steps of the penalty starting.
+- What it does achieve is the abstention half of the idea: confident wrong answers fall from about 100% (closed-book)
+  to 1.8%. But the model abstains almost regardless of the question, rather than answering the ones it can.
+- The math half of the mix kept improving: SVAMP 51.6% is the best so far, GSM8K 33.6%.
+
 
 - **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one
   batched matmul: 99.6 ms per step instead of 173.5 ms on 16×704's matrices, and as close to an fp64 reference as
