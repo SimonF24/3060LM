@@ -10,19 +10,22 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 ## Status
 
-**GPU time in the current best model (rl-tinygsm):**
+**The current model is rl-curriculum:** GSM8K 33.6%, SVAMP 51.6%, with a Python tool for math and a Wikipedia search
+tool that it uses but almost always answers "I don't know" from (see below). GPU time in it:
 
 | Stage | Run | GPU time |
 |---|---|---:|
 | Pretraining | long-704 | 24.0 h of 24 h |
 | Chat SFT | sft-704 | 3.8 h |
-| Math SFT (TinyGSM, 1 of 17 shards) | sft-tinygsm | 1.4 h |
-| RL (includes about 9 min of periodic evals) | rl-tinygsm | 1.7 h |
-| Post-training total | | 7.0 h of 24 h |
+| Math SFT (TinyGSM, 8 of 17 shards) | sft-tinygsm8 | 11.0 h |
+| Math RL | rl-tinygsm8 | 2.3 h |
+| Search SFT | sft-search | 0.6 h |
+| Math + search RL (includes periodic evals) | rl-curriculum | 3.4 h |
+| Post-training total | | 21.0 h of 24 h (the rest left unused) |
 
-Development compute isn't in these numbers: about 58 GPU-hours of speedruns, probes and distillation runs, 2.7 h of
-post-training branches that weren't kept (sft-math, rl-math), and roughly 5 h of evaluation and profiling, so about
-95-100 GPU-hours on the project in all.
+Development compute isn't in these numbers: 58.4 GPU-hours of speedruns, probes and distillation runs, 6.1 h of
+post-training branches that weren't kept (sft-math, rl-math, the TinyGSM pilot and its RL, a stopped RL run), and
+roughly 10 h of evaluation, profiling and analysis, so about 120 GPU-hours on the project in all.
 
 Pretraining is done. The 24-hour run (16×704, 101M parameters, 2.15B tokens) reached **0.9838 bits per byte**, with
 HellaSwag 28.6%, PIQA 62.1%, ARC-Easy 51.1% and ARC-Challenge 21.3%.
@@ -164,7 +167,8 @@ The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data
 2. ~~**Final pretraining run**~~: 24 hours, 0.9838 BPB.
 3. ~~**Chat fine-tuning (SFT)**~~: chat format and calculator calls learned; GSM8K 1.8%, SVAMP 2.9%.
 4. ~~**RL with verifiable rewards**~~: after TinyGSM SFT with a Python tool, GSM8K 16.6%, SVAMP 29.5%.
-5. **RL with search and abstention (exploratory):** reward correct answers, penalize wrong ones, and give partial credit for "I don't know", to test whether a model too small to store many facts can make up for it by looking them up.
+5. ~~**RL with search and abstention (exploratory)**~~: confident wrong answers fell from about 100% to 1.8%, but only by abstaining on nearly everything; at 101M parameters the model finds the answer in its passages about 9% of the time.
+6. **Next model:** a reading-comprehension stage early in post-training (or in the pretraining mix) before trying search again, and more math and code data (all 17 TinyGSM shards, code solutions).
 
 ## System Specs
 

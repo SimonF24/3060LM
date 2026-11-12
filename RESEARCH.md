@@ -63,6 +63,26 @@ The idea: give the model search and code tools, then use RL that rewards correct
 - **Metrics:** precision when answering, coverage, and closed-book vs. open-book accuracy.
 - **Early go/no-go check:** after SFT, measure how often the model extracts the right answer when handed the correct passage. If that's poor, RL won't save it.
 
+### Outcome for the first model
+
+The early go/no-go check above was the right one, and it said no. After search SFT, the model answered correctly on
+3% of questions whose answer was in its top 3 passages (and abstained on 88% of them, as often as on questions whose
+answer wasn't there). RL with +1 / 0 / -1 collapsed to always abstaining within 19 steps. A curriculum (wrong answers
+free for 60% of the steps) got it answering, but only about 9% of answers were right, so once the -1 penalty came
+back it abstained on 98% of questions. Confident wrong answers fell from about 100% to 1.8%, but nothing was gained in
+correct answers. Details in RESULTS.md.
+
+**For the next model:**
+- **Reading first.** Teach answer extraction before search: SFT on extractive QA (SQuAD-style passage + question →
+  span), or put such data in the pretraining mix. Run the go/no-go check (accuracy when handed the right passage)
+  before any search RL; it needs to be well above 50% for +1 / 0 / -1 to pay.
+- **Easier retrieval output.** A shorter snippet around the best match, or the top passage only, gives the model less
+  to read.
+- **Reward for the transition.** If extraction is good but not great, a smaller penalty (-0.25 means answer above 20%
+  confidence) could hold coverage while still discouraging guesses.
+- **More math and code.** TinyGSM scaled well (1 shard: GSM8K 10.5%; 8 shards: 30.6%), so all 17 shards and code
+  data are the most reliable gains for the post-training budget.
+
 ### Expectations for RL
 
 Models much larger than ours still score low on GSM8K: about 16.5% at 1.38B parameters and 2.2% at 1.12B, per their model cards, which we haven't verified. Treat RL at about 100M parameters as an experiment that could fail. Single-GPU RL also reportedly diverged with linear LR decay and needed cosine, so start with cosine.
