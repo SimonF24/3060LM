@@ -271,6 +271,27 @@ sft-704 settings, 658.5 min (11.0 h) at 21.9k tok/s, no restarts. Greedy scores 
 - Chat val loss ends slightly below the pilot's (1.5291 vs 1.5316) despite 8x more math: the larger replay share
   (12% vs 2%) holds general chat steady. It rose to 1.565 by step 2,000, then fell for the rest of the run.
 
+### Math RL from sft-tinygsm8 (`rl-tinygsm8`)
+
+`rl.py` from sft-tinygsm8, as rl-tinygsm (400 steps × 32 GSM8K training problems × 16 replies). 138.4 min (2.3 h),
+10.0GB peak, no restarts.
+
+| Model | GSM8K | SVAMP (held out) | Training reward |
+|---|---:|---:|---|
+| sft-tinygsm8 | 30.63 ± 1.27% | 48.6 ± 1.6% | |
+| rl-tinygsm8 | **35.33 ± 1.32%** | 46.9 ± 1.6% | 26% at step 50, 38-43% from step 300 |
+
+| Step | 0 | 50 | 100 | 150 | 200 | 250 | 300 | 350 | 400 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| GSM8K (first 400) | 33.50% | 35.00% | 34.25% | 36.75% | 39.00% | 37.75% | 39.00% | 38.50% | 36.75% |
+| SVAMP (first 400) | 45.25% | 52.25% | 44.25% | 44.25% | 45.75% | 46.50% | 44.50% | 46.75% | 42.75% |
+
+- GSM8K rises 4.7 points (about 2.6 standard errors of the difference), and the training reward climbs from 26% to
+  about 40%, with 13-22 of 32 groups carrying signal per step.
+- SVAMP doesn't improve (-1.7 points, within error): as with rl-tinygsm, RL on GSM8K's training split sharpens
+  GSM8K-style problems rather than math in general.
+- Mid-run, replies briefly used 2-3 Python calls each (steps 150-250), then went back to one.
+
 ### Cost to general chat
 
 Masked loss on 2,000 held-out smol-smoltalk conversations, and the log-probability benchmarks from `evaluate.py`
