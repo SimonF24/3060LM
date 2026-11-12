@@ -254,6 +254,23 @@ Periodic evals (first 400 problems of each, greedy):
   training split, in GSM8K's style).
 - Replies stay short (72-87 tokens) with exactly one Python call each.
 
+## TinyGSM, 8 shards (`sft-tinygsm8`)
+
+SFT from sft-704 on TinyGSM shards 0-7 (5.37M problems, docstrings removed, decontaminated) plus 170k smol-smoltalk
+conversations as replay (about 12% of tokens): 5.54M conversations, 865.6M tokens, 13,381 steps of 64 rows at the
+sft-704 settings, 658.5 min (11.0 h) at 21.9k tok/s, no restarts. Greedy scores with the Python tool:
+
+| Model | TinyGSM problems | Chat val loss | GSM8K | SVAMP (held out) |
+|---|---:|---:|---:|---:|
+| sft-tinygsm (pilot, 1 shard) | 671k | 1.5316 | 10.54% | 27.2% |
+| rl-tinygsm (pilot + RL) | 671k | 1.5958 | 16.60% | 29.5% |
+| sft-tinygsm8 | 5.37M | 1.5291 | **30.63 ± 1.27%** | **48.6 ± 1.6%** |
+
+- 8x the problems roughly triples GSM8K (10.5% to 30.6%) and nearly doubles held-out SVAMP (27.2% to 48.6%), so the
+  extra data improves math reasoning in general, not only GSM8K's style.
+- Chat val loss ends slightly below the pilot's (1.5291 vs 1.5316) despite 8x more math: the larger replay share
+  (12% vs 2%) holds general chat steady. It rose to 1.565 by step 2,000, then fell for the rest of the run.
+
 ### Cost to general chat
 
 Masked loss on 2,000 held-out smol-smoltalk conversations, and the log-probability benchmarks from `evaluate.py`
