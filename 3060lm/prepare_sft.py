@@ -212,6 +212,7 @@ def main():
         np.save(OUT / f"{split}_mask.npy", mask)
         meta[split] = stats
         print(split, stats, flush=True)
+        del ids, mask  # a large train set would otherwise stay in memory while the val set is built
     (OUT / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
