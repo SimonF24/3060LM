@@ -55,6 +55,9 @@ class RLConfig:
     max_new_tokens: int = 320
     temperature: float = 1.0
     lr: float = 2e-5  # AdamW, constant after warmup
+    # Weight of a KL penalty toward the initial model on the trained sequences' sampled tokens (GRPO's k3 estimator),
+    # which keeps the policy near the SFT model; 0 turns it off
+    kl_beta: float = 0.0
     muon_lr: float = 0.0  # 0 puts every parameter on AdamW; Muon's fixed-size updates suit noisy RL gradients poorly
     weight_decay: float = 0.0
     beta2: float = 0.95
@@ -94,10 +97,13 @@ def task_reward(task: str, reply_text: str, answer, qa_wrong: float = REWARDS["w
     return qa_wrong if outcome == "wrong" else REWARDS[outcome]
 
 
-def policy_loss(model, batch: list[tuple[list[int], list[int], float]], n_tokens: int) -> torch.Tensor:
+def policy_loss(model, batch: list[tuple[list[int], list[int], float]], n_tokens: int, reference=None,
+                kl_beta: float = 0.0) -> torch.Tensor:
     """
     batch holds (token ids, trained flags per id, advantage). Returns the summed advantage-weighted negative
-    log-probability of the trained tokens, divided by n_tokens (the trained tokens in the whole step).
+    log-probability of the trained tokens, divided by n_tokens (the trained tokens in the whole step). With a
+    reference model and kl_beta > 0, adds kl_beta times the k3 estimate of KL(policy || reference) on those tokens:
+    exp(r) - r - 1 with r = log p_ref - log p, which is never negative and is 0 where the two agree.
     """
     width = max(len(ids) for ids, _, _ in batch)
     x = torch.full((len(batch), width), PAD, dtype=torch.long)
@@ -109,7 +115,18 @@ def policy_loss(model, batch: list[tuple[list[int], list[int], float]], n_tokens
     with torch.autocast("cuda", dtype=torch.bfloat16):
         logits = model(x[:, :-1])
     logp = -F.cross_entropy(logits.float().flatten(0, 1), x[:, 1:].flatten(), reduction="none")
-    return -(logp * weight[:, 1:].flatten()).sum() / n_tokens
+    loss = -(logp * weight[:, 1:].flatten()).sum() / n_tokens
+    if reference is not None and kl_beta > 0:
+        trained = torch.zeros_like(weight)
+        for r, (ids, flags, _) in enumerate(batch):
+            trained[r, :len(ids)] = torch.tensor(flags, dtype=torch.float32)
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            ref_logits = reference(x[:, :-1])
+        ref_logp = -F.cross_entropy(ref_logits.float().flatten(0, 1), x[:, 1:].flatten(), reduction="none")
+        log_ratio = ref_logp - logp
+        kl = torch.exp(log_ratio) - log_ratio - 1
+        loss = loss + kl_beta * (kl * trained[:, 1:].cuda().flatten()).sum() / n_tokens
+    return loss
 
 
 def main():
@@ -125,6 +142,11 @@ def main():
     model.load_state_dict(ckpt["model"])
     print(f"{cfg.name}: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters from {cfg.init}")
     optimizers = build_optimizers(model, cfg)
+    reference = None
+    if cfg.kl_beta > 0:  # a frozen copy of the initial model
+        reference = Transformer(model_cfg).cuda()
+        reference.load_state_dict(ckpt["model"])
+        reference.eval().requires_grad_(False)
 
     tasks = cfg.tasks.split(",")
     per_step = {"qa": round(cfg.problems * cfg.qa_fraction)} if len(tasks) > 1 else {tasks[0]: cfg.problems}
@@ -205,7 +227,7 @@ def main():
         n_tokens = sum(sum(trained) for _, trained, _ in sequences)
         loss_sum = 0.0
         for b in range(0, len(sequences), cfg.micro_batch):
-            loss = policy_loss(model, sequences[b:b + cfg.micro_batch], n_tokens)
+            loss = policy_loss(model, sequences[b:b + cfg.micro_batch], n_tokens, reference, cfg.kl_beta)
             loss.backward()
             loss_sum += loss.item()
         if sequences:
