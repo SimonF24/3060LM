@@ -402,6 +402,52 @@ GSM8K 1,319, SVAMP 1,000.)
   to 1.8%. But the model abstains almost regardless of the question, rather than answering the ones it can.
 - The math half of the mix kept improving: SVAMP 51.6% is the best so far, GSM8K 33.6%.
 
+## Reading pilot (development compute, toward the second model)
+
+**`sft-reading`:** SFT from sft-704 on 79.1M tokens: all 87,599 SQuAD v1.1 training questions as reading
+demonstrations (the question's own paragraph shuffled among 2 BM25 passages from other articles, formatted as search
+results; `qa.py --reading`), 40k TriviaQA/NQ search demonstrations and 20k smol-smoltalk conversations. 1,285 steps,
+63.9 min.
+
+The go/no-go check (`qa.evaluate_reading`): the reply is started with a search call and results that contain an
+answer, and the model writes only the answer. "Precision" is correct / (correct + wrong).
+
+| Model | Passages handed to it | Correct | Abstain | Wrong | Precision |
+|---|---|---:|---:|---:|---:|
+| sft-search | SQuAD validation paragraph + 2 distractors (2,000) | 1.2% | 88.3% | 10.6% | 10% |
+| sft-reading | same | **39.6%** | 4.8% | 55.7% | 42% |
+| sft-search | TriviaQA/NQ validation, real BM25 top 3 containing an answer (874) | 2.4% | 88.4% | 9.2% | 21% |
+| sft-reading | same | **18.5%** | 63.5% | 18.0% | **51%** |
+
+On the open TriviaQA eval (first 2,000) sft-reading gets 16.0% correct, 63.6% abstain, 20.5% wrong (score -0.045,
+precision 44%), against 2.0% / 87.3% / 10.8% for sft-search; NQ 4.4% correct. Some "wrong" answers are near misses
+under exact match ("Levi's Stadium in the San Francisco Bay Area" for "Levi's Stadium").
+
+**`rl-reading-test`:** QA-only RL from sft-reading with +1 / 0 / -1 at temperature 1, 80 steps (64.9 min). It
+collapsed to abstaining again: 50% abstain at step 1, 86% at step 8, 98% by step 16, 100% from step 32, ending at
+99.8% on TriviaQA. Sampled at temperature 1, the model's answers are much worse than its greedy ones (9% correct vs
+41% wrong at step 1, about 18% precision, against 44-51% greedy), so RL mostly sees wrong answers.
+
+**`rl-reading-kl`:** the same at temperature 0.6 with a KL penalty toward sft-reading (`kl_beta=0.1`, k3 estimator on
+the trained sequences), 50 steps, 27.3 min. Sampled precision started at 25-43%, and abstention rose more slowly,
+but in the same direction:
+
+| Step | TriviaQA correct | abstain | wrong | score | precision | NQ score |
+|---|---:|---:|---:|---:|---:|---:|
+| 0 | 11.2% | 68.2% | 20.5% | -0.092 | 35% | -0.168 |
+| 25 | 4.5% | 90.2% | 5.2% | -0.007 | 46% | -0.020 |
+| 50 | 3.5% | 92.0% | 4.5% | -0.010 | 44% | -0.007 |
+
+(first 400 questions of each)
+
+- Reading data works: extraction from a handed paragraph goes from 1% to 40%, and greedy precision on real search
+  results reaches about 50%. It belongs in the second model.
+- QA RL with +1 / 0 / -1 doesn't. The score rises only because answering below 50% precision loses reward on
+  average, so RL answers less: wrong answers fall from 20.5% to 4.5%, but two-thirds of the correct answers go too
+  (11.2% to 3.5%), and precision barely moves. It shifts the answering threshold rather than improving the model's
+  judgment of which questions it can answer, so QA RL is left out of the second model.
+
+## Notes
 
 - **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one
   batched matmul: 99.6 ms per step instead of 173.5 ms on 16×704's matrices, and as close to an fp64 reference as
