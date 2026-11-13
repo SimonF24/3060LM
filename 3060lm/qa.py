@@ -7,9 +7,15 @@ punctuation, no articles, single spaces) and exact match against any accepted an
 averaged over questions: +1 correct, 0 for abstaining and -1 wrong by default, so answering pays only when the
 model is more likely right than wrong. The training splits are for SFT and RL; the validation splits are held out.
 
+Reading comprehension (SQuAD v1.1) uses the same format, with the question's own paragraph as one of the search
+results, so the model learns to find an answer in passages it's handed. evaluate_reading is the go/no-go check for
+search: accuracy when the right passage is in the results.
+
 Usage: python qa.py --recall [--limit=2000]   # how often BM25's top passages contain an answer
        python qa.py --demos                    # search demonstrations for the training questions, cached in data/qa
+       python qa.py --reading                  # SQuAD reading demonstrations (train) and eval prefixes (validation)
 """
+import random
 import json
 from multiprocessing import Pool
 from pathlib import Path
@@ -25,6 +31,8 @@ FILES = {
     ("triviaqa", "validation"): ROOT / "data/raw/triviaqa/unfiltered.nocontext/validation-00000-of-00001.parquet",
     ("nq", "train"): ROOT / "data/raw/nq_open/nq_open/train-00000-of-00001.parquet",
     ("nq", "validation"): ROOT / "data/raw/nq_open/nq_open/validation-00000-of-00001.parquet",
+    ("squad", "train"): ROOT / "data/raw/squad/plain_text/train-00000-of-00001.parquet",
+    ("squad", "validation"): ROOT / "data/raw/squad/plain_text/validation-00000-of-00001.parquet",
 }
 DEMOS = ROOT / "data/qa"
 ABSTAIN = "I don't know"
@@ -72,6 +80,14 @@ def find_answer(passages: str, answers: list[str]) -> str | None:
     return None
 
 
+def load_squad(split: str, start: int = 0, stop: int | None = None) -> list[dict]:
+    """SQuAD rows: question, answers (unique, in order), title and context (the paragraph the answers come from)."""
+    table = pq.read_table(FILES[("squad", split)], columns=["question", "answers", "title", "context"])
+    rows = table.slice(start, (stop or table.num_rows) - start).to_pylist()
+    return [{"question": r["question"].strip(), "answers": list(dict.fromkeys(r["answers"]["text"])),
+             "title": r["title"].replace("_", " "), "context": r["context"]} for r in rows]
+
+
 def search_query(question: str) -> str:
     return question.rstrip("?").replace('"', "").strip()
 
@@ -85,6 +101,44 @@ def search_demo(question: str, answers: list[str], search_tool) -> str:
     results = search_tool(query)
     answer = find_answer(results, answers)
     return f'>>> search("{query}")\n{results}#### {answer if answer else ABSTAIN}'
+
+
+def reading_prefix(row: dict, searcher, results: int = 3) -> str:
+    """
+    A search call whose results hold the row's own paragraph at a random position among BM25 passages from other
+    articles, so exactly one result is meant to contain the answer.
+    """
+    from search import format_results
+    query = search_query(row["question"])
+    others = [r for r in searcher(query, results + 5) if r[0] != row["title"]][:results - 1]
+    passages = others[:]
+    passages.insert(random.Random(row["question"]).randrange(len(others) + 1), (row["title"], row["context"], 0.0))
+    return f'>>> search("{query}")\n{format_results(passages)}'
+
+
+def _reading(job: tuple[str, int, int]) -> list[dict]:
+    import search
+    if search._searcher is None:
+        search._searcher = search.Searcher()
+    split, start, stop = job
+    out = []
+    for row in load_squad(split, start, stop):
+        prefix = reading_prefix(row, search._searcher)
+        out.append({"question": row["question"], "answers": row["answers"], "prefix": prefix,
+                    "reply": f"{prefix}#### {row['answers'][0]}"})
+    return out
+
+
+def build_reading(chunk: int = 2_000):
+    """Writes data/qa/reading_squad_<split>.jsonl: a reading demonstration (train) or eval prefix (validation) per row."""
+    DEMOS.mkdir(parents=True, exist_ok=True)
+    for split in ["train", "validation"]:
+        n = pq.ParquetFile(FILES[("squad", split)]).metadata.num_rows
+        with Pool(6) as pool, open(DEMOS / f"reading_squad_{split}.jsonl", "w") as f:
+            for rows in pool.imap(_reading, [(split, s, min(s + chunk, n)) for s in range(0, n, chunk)]):
+                for r in rows:
+                    f.write(json.dumps(r) + "\n")
+        print(f"squad {split}: {n:,} rows", flush=True)
 
 
 def _demos(job: tuple[str, int, int]) -> list[dict]:
@@ -130,6 +184,39 @@ def evaluate_qa(model, tokenizer, name: str, limit: int = 2000, max_new_tokens: 
                          for (q, _), r, o in list(zip(questions, replies, outcomes))[:5]]}
 
 
+def evaluate_reading(model, tokenizer, which: str = "squad", limit: int = 2000) -> dict:
+    """
+    The go/no-go check: the reply is started with a search call and its results, which contain an answer, and the
+    model only has to write the answer. 'squad' hands it the question's own SQuAD paragraph among 2 distractors;
+    'retrieved' uses TriviaQA and NQ validation questions whose real BM25 top 3 contains an accepted answer.
+    """
+    from chat import generate, prompt_ids, segments
+    if which == "squad":
+        with open(DEMOS / "reading_squad_validation.jsonl") as f:
+            items = [json.loads(line) for _, line in zip(range(limit), f)]
+    else:
+        from search import search_tool
+        items = []
+        for name in ["triviaqa", "nq"]:
+            for q, answers in load_questions(name, "validation", 0, limit):
+                query = search_query(q)
+                results = search_tool(query)
+                if find_answer(results, answers):
+                    items.append({"question": q, "answers": answers, "prefix": f'>>> search("{query}")\n{results}'})
+    prompts = []
+    for item in items:  # tokenized piece by piece, as training and generation tokenize tool calls and output
+        ids = prompt_ids(tokenizer, [{"role": "user", "content": item["question"]}])
+        for piece, _ in segments(item["prefix"]):
+            ids += tokenizer.encode(piece).ids if piece else []
+        prompts.append(ids)
+    replies = [tokenizer.decode(r) for r in generate(model, prompts, 32, tokenizer=tokenizer)]
+    outcomes = [grade(r, item["answers"]) for r, item in zip(replies, items)]
+    n = len(items)
+    return {**{k: round(outcomes.count(k) / n, 4) for k in REWARDS}, "n": n,
+            "examples": [{"question": i["question"], "answers": i["answers"][:3], "reply": r, "outcome": o}
+                         for i, r, o in list(zip(items, replies, outcomes))[:5]]}
+
+
 def recall(limit: int):
     """How often an accepted answer appears in BM25's top k passages, searching with the question."""
     from search import Searcher, format_results
@@ -151,3 +238,5 @@ if __name__ == "__main__":
         recall(int(args.get("limit", 2000)))
     if "demos" in args:
         build_demos()
+    if "reading" in args:
+        build_reading()

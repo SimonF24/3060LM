@@ -13,6 +13,8 @@ Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
        python prepare_sft.py --out=sft-search --qa=1 --qa_chunks=10 --tinygsm_shards=1 --tinygsm_groups=100 \
            --gsm8k_repeats=0 --smoltalk_groups=20
            # search stage: 40k search demonstrations (from qa.py --demos) with TinyGSM and chat replay
+       python prepare_sft.py --out=sft-reading --reading=1 --qa=1 --gsm8k_repeats=0 --smoltalk_groups=20
+           # reading pilot: all SQuAD reading demonstrations (qa.py --reading) and search demonstrations
 """
 import json
 import re
@@ -40,6 +42,7 @@ TINYGSM_SHARDS = int(ARGS.get("tinygsm_shards", 0))  # TinyGSM parquet files to 
 QA = ARGS.get("qa", "0") == "1"  # search demonstrations for TriviaQA's and NQ's training questions
 QA_CHUNK = 2_000  # questions per job
 QA_CHUNKS = int(ARGS.get("qa_chunks", -1))  # QA_CHUNK-question chunks per dataset to use; negative uses all
+READING = ARGS.get("reading", "0") == "1"  # SQuAD reading demonstrations, from qa.py --reading
 TINYGSM_GROUPS = int(ARGS.get("tinygsm_groups", -1))  # 1,000-problem row groups per TinyGSM shard; negative uses all
 VAL_CONVERSATIONS = 2_000
 NGRAM = 10  # a training problem sharing this many consecutive words with a benchmark problem is dropped
@@ -80,6 +83,11 @@ def load_conversations(source: str, part: int) -> list[list[dict]]:
     One part of a source: a 1,000-row group of a smol-smoltalk file, or all of GSM8K's train split.
     Workers load their own parts, so no process holds all the text at once.
     """
+    if source == "reading":
+        with open(DEMOS / "reading_squad_train.jsonl") as f:
+            lines = [line for i, line in enumerate(f) if part * QA_CHUNK <= i < (part + 1) * QA_CHUNK]
+        return [[{"role": "user", "content": d["question"]}, {"role": "assistant", "content": d["reply"]}]
+                for d in map(json.loads, lines)]
     if source.startswith("qa/"):
         with open(DEMOS / f"demos_{source.removeprefix('qa/')}.jsonl") as f:  # written by qa.py --demos
             lines = [line for i, line in enumerate(f) if part * QA_CHUNK <= i < (part + 1) * QA_CHUNK]
@@ -180,6 +188,9 @@ def main():
     if SMOLTALK_GROUPS >= 0:
         train_jobs = train_jobs[:SMOLTALK_GROUPS]
     train_jobs += [("gsm8k", 0)] * GSM8K_REPEATS
+    if READING:
+        n = sum(1 for _ in open(DEMOS / "reading_squad_train.jsonl"))
+        train_jobs += [("reading", part) for part in range(-(-n // QA_CHUNK))]
     if QA:
         for name in ["triviaqa", "nq"]:
             n = pq.ParquetFile(ROOT / "data/raw" / ("triviaqa/unfiltered.nocontext" if name == "triviaqa" else "nq_open/nq_open")
@@ -194,7 +205,7 @@ def main():
 
     meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS, "calculator": CALCULATOR,
             "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS, "tinygsm_groups": TINYGSM_GROUPS,
-            "qa": QA, "qa_chunks": QA_CHUNKS}
+            "qa": QA, "qa_chunks": QA_CHUNKS, "reading": READING}
     for split, jobs in [("train", train_jobs), ("val", val_jobs)]:
         ids, mask, stats = pack(encode_all(jobs), seed=0)
         np.save(OUT / f"{split}_ids.npy", ids)
