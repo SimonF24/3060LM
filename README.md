@@ -10,15 +10,19 @@ The original pipeline was written by hand. Since then, experiments have been run
 
 ## Status
 
-**The current model is rl-v2:** GSM8K 41.2%, SVAMP 57.5%, with a Python tool for math and a Wikipedia search tool
-(12.8% of TriviaQA answered correctly from its own searches, but 28.2% answered wrongly). GPU time in it:
+**The current model is rl-abstain:** GSM8K 40.8%, SVAMP 55.8%, with a Python tool for math and a Wikipedia search
+tool. On TriviaQA it answers 7.5% correctly from its own searches, 7.8% wrongly, and says "I don't know" to the rest.
+GPU time in it:
 
 | Stage | Run | GPU time |
 |---|---|---:|
 | Pretraining | long-704 | 24.0 h of 24 h |
 | Combined SFT (chat, TinyGSM 12 of 17 shards, SQuAD reading, search demos) | sft-v2 | 17.1 h |
 | Math RL (includes periodic evals) | rl-v2 | 2.3 h |
-| Post-training total | | 19.4 h of 24 h (the rest left unused) |
+| Relabelling 50k TriviaQA/NQ questions with rl-v2's own answers (includes a pilot and a crashed run) | | 2.5 h |
+| Abstention SFT on those labels, with chat and TinyGSM replay | sft-abstain | 0.9 h |
+| Short math RL (150 steps) | rl-abstain | 1.3 h |
+| Post-training total | | 24.0 h of 24 h |
 
 Development compute isn't in these numbers: 58.4 GPU-hours of speedruns, probes and distillation runs; the first
 post-trained model (rl-curriculum, 21.0 h) and its branches (6.1 h); 2.6 h of reading and QA RL tests for the second
@@ -43,7 +47,13 @@ abstaining on nearly everything: at 101M parameters the model finds the answer i
 A second post-training run from the same base (one combined SFT with SQuAD reading and 12 TinyGSM shards, then math
 RL, 19.4 h) reached GSM8K 41.2% and SVAMP 57.5%, extracts answers from a handed paragraph 37% of the time, and answers
 12.8% of TriviaQA correctly from its own searches, at the cost of more wrong factual answers (28.2%) and a 0.06 higher
-chat loss. It's the current model.
+chat loss.
+
+An abstention stage then fixed most of those wrong answers. rl-v2 answered 50k training questions itself; the ones it
+got right kept its answer as the SFT target and the rest got "I don't know". After that SFT and a short math RL to win
+back the math, wrong TriviaQA answers fall from 28.2% to 7.8% for 5.3 points fewer correct ones, the QA scores rise
+from -0.15 and -0.22 to about zero, and math is within 0.4 (GSM8K) and 1.7 (SVAMP) points of rl-v2. This is
+rl-abstain, the current model.
 
 Distilling from SmolLM2-360M or -1.7B loses to direct training at the same 45-minute budget (1.2529 and 1.4247
 vs 1.1883 BPB), because the teacher's forward passes leave the student with 31% and 12% of the tokens.
@@ -171,7 +181,8 @@ The original arXiv/PubMed pipeline (EDA notebook, preprocessing, tokenizer, data
 4. ~~**RL with verifiable rewards**~~: after TinyGSM SFT with a Python tool, GSM8K 16.6%, SVAMP 29.5%.
 5. ~~**RL with search and abstention (exploratory)**~~: confident wrong answers fell from about 100% to 1.8%, but only by abstaining on nearly everything; at 101M parameters the model finds the answer in its passages about 9% of the time.
 6. ~~**Second model**~~: one combined SFT with reading and 12 TinyGSM shards, then math RL: GSM8K 41.2%, SVAMP 57.5%, and search answers 12.8% of TriviaQA correctly.
-7. **Next:** cut wrong factual answers (28.2% on TriviaQA) without losing the correct ones, for example by mixing QA problems into the math RL or adding an abstention-focused SFT; protect chat (val loss rose 0.06); then code data and a stronger base model.
+7. ~~**Fewer wrong factual answers**~~: SFT on the model's own answers (kept when right, "I don't know" when wrong), then a short math RL: wrong TriviaQA answers 28.2% → 7.8%, correct 12.8% → 7.5%, math about unchanged.
+8. **Next:** code data and a stronger base model; more correct factual answers needs better reading of retrieved passages, which a stronger base should help.
 
 ## System Specs
 
