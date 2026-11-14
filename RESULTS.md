@@ -482,6 +482,36 @@ Math RL periodic evals (first 400): GSM8K 39.25% at step 0, 40.25-41.75% from st
 - Chat val loss is 0.06 above the first model's, with chat a smaller share of the data (about 10% of tokens).
   The log-probability benchmarks are flat between the two models.
 
+### Abstention SFT from rl-v2 (`sft-abstain`)
+
+Targets from the model's own answers (`qa.py --relabel`): rl-v2 answers 25k random TriviaQA and 25k NQ training
+questions greedily with search. The ones it gets right keep its reply as the target (11.4% of TriviaQA, 4.8% of NQ),
+and the rest get its search call and results followed by `#### I don't know`. In a 500-question pilot per dataset, the
+greedy label agreed with the majority of 8 samples at T=0.6 on 97% of questions, so labels come from the greedy reply
+only (a ninth of the cost). SFT from rl-v2 on these 50k with the search stage's replay (20k smol-smoltalk, 100k TinyGSM),
+lr 1e-4, 801 steps. GPU time: 0.14 h pilot, 0.71 h for a relabel run that crashed after its first dataset, 1.62 h
+relabelling, 0.87 h SFT with evals, 3.3 h in all (rl-v2's lineage is now at 22.7 of 24 h). A bug in the first full run
+labelled NQ from one T=0.6 sample instead of the greedy reply; the 491 affected labels (2%) were repaired from the saved
+replies before the SFT.
+
+| | rl-v2 | sft-abstain |
+|---|---:|---:|
+| GSM8K | 41.17% | 35.41% |
+| SVAMP | 57.5% | 52.1% |
+| TriviaQA (first 2,000): correct / abstain / wrong | 12.8 / 59.1 / 28.2% | 5.6 / 90.4 / 4.0% |
+| TriviaQA score (+1 / 0 / -1) | -0.154 | **+0.016** |
+| NQ (3,610): correct / abstain / wrong | 4.3 / 69.1 / 26.6% | 0.8 / 96.9 / 2.3% |
+| NQ score | -0.223 | -0.015 |
+| Chat val loss | 1.6481 | **1.5924** |
+
+- Wrong answers fall 7× on TriviaQA (28.2% → 4.0%) and 12× on NQ, while correct ones fall about 2× and 5×. Abstaining
+  at random would cut both by the same factor, so the model learned something about which questions it can answer:
+  when it answers TriviaQA it's right 58% of the time, against 31% for rl-v2. That is the first positive TriviaQA score.
+- About half of rl-v2's correct TriviaQA answers are lost to abstention, more than the labels ask for (rl-v2 itself
+  answered 11.4% of the training questions correctly).
+- GSM8K and SVAMP fall about 6 points, back to sft-v2's level: the SFT undoes the math RL's gain.
+- Chat val loss improves by 0.056, below sft-v2's, from the smol-smoltalk replay.
+
 ## Notes
 
 - **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one

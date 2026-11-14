@@ -15,6 +15,9 @@ Usage: python prepare_sft.py [--seq_len=1024] [--gsm8k_repeats=4]
            # search stage: 40k search demonstrations (from qa.py --demos) with TinyGSM and chat replay
        python prepare_sft.py --out=sft-reading --reading=1 --qa=1 --gsm8k_repeats=0 --smoltalk_groups=20
            # reading pilot: all SQuAD reading demonstrations (qa.py --reading) and search demonstrations
+       python prepare_sft.py --out=sft-abstain --qa=1 --qa_demos=relabel --tinygsm_shards=1 --tinygsm_groups=100 \
+           --gsm8k_repeats=0 --smoltalk_groups=20
+           # abstention stage: QA targets from the model's own answers (qa.py --relabel), with TinyGSM and chat replay
 """
 import json
 import re
@@ -42,6 +45,7 @@ TINYGSM_SHARDS = int(ARGS.get("tinygsm_shards", 0))  # TinyGSM parquet files to 
 QA = ARGS.get("qa", "0") == "1"  # search demonstrations for TriviaQA's and NQ's training questions
 QA_CHUNK = 2_000  # questions per job
 QA_CHUNKS = int(ARGS.get("qa_chunks", -1))  # QA_CHUNK-question chunks per dataset to use; negative uses all
+QA_DEMOS = ARGS.get("qa_demos", "demos")  # data/qa/<qa_demos>_<name>.jsonl: "demos" (qa.py --demos) or "relabel"
 READING = ARGS.get("reading", "0") == "1"  # SQuAD reading demonstrations, from qa.py --reading
 TINYGSM_GROUPS = int(ARGS.get("tinygsm_groups", -1))  # 1,000-problem row groups per TinyGSM shard; negative uses all
 VAL_CONVERSATIONS = 2_000
@@ -89,7 +93,7 @@ def load_conversations(source: str, part: int) -> list[list[dict]]:
         return [[{"role": "user", "content": d["question"]}, {"role": "assistant", "content": d["reply"]}]
                 for d in map(json.loads, lines)]
     if source.startswith("qa/"):
-        with open(DEMOS / f"demos_{source.removeprefix('qa/')}.jsonl") as f:  # written by qa.py --demos
+        with open(DEMOS / f"{QA_DEMOS}_{source.removeprefix('qa/')}.jsonl") as f:  # qa.py --demos or --relabel
             lines = [line for i, line in enumerate(f) if part * QA_CHUNK <= i < (part + 1) * QA_CHUNK]
         return [[{"role": "user", "content": d["question"]}, {"role": "assistant", "content": d["reply"]}]
                 for d in map(json.loads, lines)]
@@ -193,8 +197,7 @@ def main():
         train_jobs += [("reading", part) for part in range(-(-n // QA_CHUNK))]
     if QA:
         for name in ["triviaqa", "nq"]:
-            n = pq.ParquetFile(ROOT / "data/raw" / ("triviaqa/unfiltered.nocontext" if name == "triviaqa" else "nq_open/nq_open")
-                               / "train-00000-of-00001.parquet").metadata.num_rows
+            n = sum(1 for _ in open(DEMOS / f"{QA_DEMOS}_{name}.jsonl"))
             parts = range(-(-n // QA_CHUNK))
             train_jobs += [(f"qa/{name}", part) for part in (parts[:QA_CHUNKS] if QA_CHUNKS >= 0 else parts)]
     for f in sorted((RAW / "tinygsm/data").glob("train-*.parquet"))[:TINYGSM_SHARDS]:
@@ -205,7 +208,7 @@ def main():
 
     meta = {"seq_len": SEQ_LEN, "gsm8k_repeats": GSM8K_REPEATS, "calculator": CALCULATOR,
             "smoltalk_groups": SMOLTALK_GROUPS, "tinygsm_shards": TINYGSM_SHARDS, "tinygsm_groups": TINYGSM_GROUPS,
-            "qa": QA, "qa_chunks": QA_CHUNKS, "reading": READING}
+            "qa": QA, "qa_demos": QA_DEMOS, "qa_chunks": QA_CHUNKS, "reading": READING}
     for split, jobs in [("train", train_jobs), ("val", val_jobs)]:
         ids, mask, stats = pack(encode_all(jobs), seed=0)
         np.save(OUT / f"{split}_ids.npy", ids)

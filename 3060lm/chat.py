@@ -233,6 +233,8 @@ def generate(model, prompts: list[list[int]], max_new_tokens: int, temperature: 
     top_k=0 samples from the full distribution. With details, each reply is a dict with its tokens, which of them the
     model sampled (rather than a tool), and whether it ended with <|im_end|> (which isn't in tokens).
     """
+    if not prompts:
+        return []
     max_len = model.config.max_seq_len
     outputs = [None] * len(prompts)
     order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))

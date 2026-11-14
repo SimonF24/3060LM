@@ -14,6 +14,8 @@ search: accuracy when the right passage is in the results.
 Usage: python qa.py --recall [--limit=2000]   # how often BM25's top passages contain an answer
        python qa.py --demos                    # search demonstrations for the training questions, cached in data/qa
        python qa.py --reading                  # SQuAD reading demonstrations (train) and eval prefixes (validation)
+       python qa.py --relabel=<checkpoint> [--per_dataset=25000 --samples=0 --temperature=0.6]
+           # abstention targets from the model's own sampled answers, in data/qa/relabel_<name>.jsonl
 """
 import random
 import json
@@ -163,6 +165,70 @@ def build_demos(chunk: int = 2_000):
         print(f"{name}: {n:,} demonstrations, {answered / n:.1%} answered (the rest abstain)", flush=True)
 
 
+def relabel(checkpoint: str, per_dataset: int, samples: int = 0, temperature: float = 0.6, out: str = "relabel"):
+    """
+    Abstention targets from the model's own answers: samples `samples` replies (with search) to each of
+    `per_dataset` random training questions per dataset, plus a greedy one. A question the model gets right in at
+    least half its samples gets one of its own correct replies as the target; any other gets its search call and
+    results followed by '#### I don't know'. samples=0 labels by the greedy reply alone: in a 500-question pilot per
+    dataset, it agreed with the majority of 8 samples at T=0.6 on 97% of questions, at a ninth of the cost. Writes
+    data/qa/<out>_<name>.jsonl with the target ('reply') and the outcomes, so the threshold can be changed later
+    without sampling again.
+    """
+    import time
+    import numpy as np
+    from tokenizers import Tokenizer
+    from chat import TOKENIZER_PATH, generate, prompt_ids
+    from evaluate import load_model
+    tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
+    model = load_model(checkpoint)
+    for name in ["triviaqa", "nq"]:
+        questions = load_questions(name, "train")
+        picked = np.random.default_rng(0).permutation(len(questions))[:per_dataset]
+        questions = [questions[i] for i in sorted(picked)]
+        prompts = [prompt_ids(tokenizer, [{"role": "user", "content": q}]) for q, _ in questions]
+        t0 = time.time()
+        greedy = [tokenizer.decode(r) for r in generate(model, prompts, 64, tokenizer=tokenizer)]
+        per_question = samples or 1  # samples=0: the greedy reply decides (answer if it's correct)
+        sampled = greedy if not samples else [
+            tokenizer.decode(r) for r in generate(model, [p for p in prompts for _ in range(samples)], 64,
+                                                  temperature=temperature, top_k=0, tokenizer=tokenizer)]
+        seconds = time.time() - t0
+        counts = {"answer": 0, "greedy_correct": 0, "greedy_wrong": 0, "greedy_correct_labelled_abstain": 0,
+                  "greedy_wrong_labelled_answer": 0}
+        with open(DEMOS / f"{out}_{name}.jsonl", "w") as f:
+            for i, (question, answers) in enumerate(questions):
+                replies = sampled[i * per_question:(i + 1) * per_question]
+                outcomes = [grade(r, answers) for r in replies]
+                correct = [r for r, o in zip(replies, outcomes) if o == "correct"]
+                if len(correct) * 2 >= per_question:
+                    # the most common correct answer, as the model wrote it
+                    by_answer = {}
+                    for r in correct:
+                        by_answer.setdefault(normalize(final_answer(r)), []).append(r)
+                    reply = max(by_answer.values(), key=len)[0]
+                else:
+                    prefix = greedy[i].rsplit("####", 1)[0] if "####" in greedy[i] else ""
+                    if not prefix.startswith('>>> search("'):
+                        from search import search_tool
+                        query = search_query(question)
+                        prefix = f'>>> search("{query}")\n{search_tool(query)}'
+                    reply = f"{prefix}#### {ABSTAIN}"
+                greedy_outcome = grade(greedy[i], answers)
+                answer = not reply.endswith(ABSTAIN)
+                counts["answer"] += answer
+                counts["greedy_correct"] += greedy_outcome == "correct"
+                counts["greedy_wrong"] += greedy_outcome == "wrong"
+                counts["greedy_correct_labelled_abstain"] += greedy_outcome == "correct" and not answer
+                counts["greedy_wrong_labelled_answer"] += greedy_outcome == "wrong" and answer
+                f.write(json.dumps({"question": question, "reply": reply, "greedy": final_answer(greedy[i]),
+                                    "greedy_outcome": greedy_outcome, "sampled": [final_answer(r) for r in replies],
+                                    "outcomes": outcomes}) + "\n")
+        n = len(questions)
+        print(f"{name}: {n:,} questions x {samples + 1} replies in {seconds / 60:.1f} min; "
+              + ", ".join(f"{k} {v / n:.1%}" for k, v in counts.items()), flush=True)
+
+
 def evaluate_qa(model, tokenizer, name: str, limit: int = 2000, max_new_tokens: int = 64) -> dict:
     """Greedy replies to the first `limit` validation questions, graded and scored with REWARDS."""
     from chat import generate, prompt_ids
@@ -240,3 +306,6 @@ if __name__ == "__main__":
         build_demos()
     if "reading" in args:
         build_reading()
+    if "relabel" in args:
+        relabel(args["relabel"], int(args.get("per_dataset", 25_000)), int(args.get("samples", 0)),
+                float(args.get("temperature", 0.6)), args.get("out", "relabel"))
