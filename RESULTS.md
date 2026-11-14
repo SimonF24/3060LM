@@ -447,6 +447,41 @@ but in the same direction:
   (11.2% to 3.5%), and precision barely moves. It shifts the answering threshold rather than improving the model's
   judgment of which questions it can answer, so QA RL is left out of the second model.
 
+## Second model (`sft-v2` → `rl-v2`)
+
+Post-training from long-704 again, with the first model's lessons: one combined SFT instead of separate chat and math
+stages, SQuAD reading before search, and more TinyGSM. The SFT data is 8.41M conversations, 1.404B tokens: half of
+smol-smoltalk (230 of 460 groups), TinyGSM shards 0-11, all 87,599 SQuAD reading demonstrations and 40k TriviaQA/NQ
+search demonstrations. 21,685 steps at the sft-704 settings, 1,027.5 min (17.1 h) at about 22.7k tok/s; then math RL
+as rl-tinygsm8 (400 steps × 32 GSM8K problems × 16), 137.1 min (2.3 h). No restarts. The data build ran out of memory
+after writing the train set (it kept those arrays while building val); val was copied from sft-tinygsm8, which uses
+the same 2,000 conversations, and prepare_sft.py now frees each split first.
+
+| | rl-curriculum (first model) | sft-v2 | rl-v2 |
+|---|---:|---:|---:|
+| GSM8K | 33.59% | 36.39% | **41.17 ± 1.36%** |
+| SVAMP | 51.6% | 52.0% | **57.5 ± 1.56%** |
+| Reading, SQuAD paragraph handed (2,000): correct / abstain / wrong | 0.0 / 99.5 / 0.6% | 39.4 / 4.5 / 56.2% | 37.4 / 3.4 / 59.3% |
+| Reading, real BM25 top 3 containing an answer (874) | 0.0 / 100 / 0.0% | 16.0 / 67.4 / 16.6% | 17.3 / 59.6 / 23.1% |
+| TriviaQA (first 2,000): correct / abstain / wrong | 0.0 / 99.2 / 0.8% | 13.5 / 66.8 / 19.8% | 12.8 / 59.1 / 28.2% |
+| TriviaQA score (+1 / 0 / -1) | -0.008 | -0.063 | -0.154 |
+| NQ (3,610): correct / abstain / wrong | 0.0 / 99.9 / 0.1% | 3.9 / 79.1 / 17.1% | 4.3 / 69.1 / 26.6% |
+| Chat val loss | 1.5871 | 1.6015 | 1.6481 |
+| HellaSwag / PIQA / ARC-Easy / ARC-Challenge | 28.79 / 59.85 / 41.04 / 22.70% | 28.81 / 59.25 / 42.47 / 20.73% | 28.68 / 59.36 / 41.84 / 21.16% |
+| Post-training GPU time | 21.0 h | 17.1 h | 19.4 h |
+
+Math RL periodic evals (first 400): GSM8K 39.25% at step 0, 40.25-41.75% from step 50; SVAMP 50.50% at step 0,
+49.75-55.25% after.
+
+- More TinyGSM (12 shards vs 8) in a single combined SFT, then the same math RL, gives GSM8K +7.6 and SVAMP +5.9
+  points over the first model with 1.6 h less post-training. Unlike rl-tinygsm8's, this math RL also lifts SVAMP.
+- Reading carries over from the pilot: about 37-39% extraction from a handed paragraph, and 12.8% of TriviaQA answered
+  correctly from the model's own searches, against 0% for the first model, which abstains on nearly everything.
+- Math RL never sees QA, but it makes the model answer QA more and abstain less: wrong TriviaQA answers rise from
+  19.8% to 28.2% and the +1 / 0 / -1 score falls from -0.063 to -0.154.
+- Chat val loss is 0.06 above the first model's, with chat a smaller share of the data (about 10% of tokens).
+  The log-probability benchmarks are flat between the two models.
+
 ## Notes
 
 - **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one
