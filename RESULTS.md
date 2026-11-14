@@ -512,6 +512,31 @@ replies before the SFT.
 - GSM8K and SVAMP fall about 6 points, back to sft-v2's level: the SFT undoes the math RL's gain.
 - Chat val loss improves by 0.056, below sft-v2's, from the smol-smoltalk replay.
 
+### Short math RL from sft-abstain (`rl-abstain`)
+
+rl-v2's math RL settings for 150 steps instead of 400: 56.7 min of training, 1.3 h with the evals. rl-v2's lineage
+ends at 24.0 h of post-training, the whole budget.
+
+| | rl-v2 | sft-abstain | rl-abstain |
+|---|---:|---:|---:|
+| GSM8K | 41.17% | 35.41% | 40.79% |
+| SVAMP | 57.5% | 52.1% | 55.8% |
+| TriviaQA (first 2,000): correct / abstain / wrong | 12.8 / 59.1 / 28.2% | 5.6 / 90.4 / 4.0% | 7.5 / 84.7 / 7.8% |
+| TriviaQA score (+1 / 0 / -1) | -0.154 | +0.016 | -0.003 |
+| NQ (3,610): correct / abstain / wrong | 4.3 / 69.1 / 26.6% | 0.8 / 96.9 / 2.3% | 1.7 / 94.0 / 4.3% |
+| NQ score | -0.223 | -0.015 | -0.027 |
+| Chat val loss | 1.6481 | 1.5924 | 1.6383 |
+
+Periodic evals (first 400): GSM8K 37.00% at step 0, 39.50 / 39.25 / 42.25% at steps 50 / 100 / 150; SVAMP 51.25%,
+then 55.00 / 53.50 / 54.75%.
+
+- The math RL recovers nearly all of rl-v2's math (GSM8K within 0.4 points, SVAMP within 1.7) in 150 steps.
+- As with rl-v2, math RL makes the model answer QA more: correct TriviaQA answers rise from 5.6% to 7.5% and wrong ones
+  from 4.0% to 7.8%, so precision when answering falls from 58% to 49%. The net effect against rl-v2 is still large:
+  wrong answers fall from 28.2% to 7.8% for 5.3 points fewer correct ones, and both scores are close to zero instead of
+  -0.15 and -0.22.
+- Chat val loss keeps some of the SFT's gain (1.638 vs 1.648).
+
 ## Notes
 
 - **19a:** BatchedMuon computes torch.optim.Muon's update but runs Newton-Schulz on same-shape matrices as one
