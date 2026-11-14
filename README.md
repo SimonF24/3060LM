@@ -6,7 +6,7 @@ pretrained checkpoint: chat SFT, math SFT and RL), counting training time but no
 
 The target is a small general-purpose chat model with a STEM bent, chosen because math and code give us tasks where answers can be checked automatically during RL post-training.
 
-The original pipeline was written by hand. Since then, experiments have been run with Claude Code, starting from that hand-written model as the baseline and measuring every change against it.
+The original pipeline was written by hand and is kept on the [`simon`](../../tree/simon) branch. Since then, experiments have been run with Claude Code, starting from that hand-written model as the baseline and measuring every change against it.
 
 ## Status
 
